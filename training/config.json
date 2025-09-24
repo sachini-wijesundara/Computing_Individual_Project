@@ -1,0 +1,14 @@
+{
+  "image_size": 512,
+  "batch_size": 8,
+  "num_epochs": 200,
+  "learning_rate": 0.0002,
+  "lr_decay_epoch": 100,
+  "perceptual_weight": 0.1,
+  "l1_weight": 10.0,
+  "num_workers": 4,
+  "log_interval": 100,
+  "save_interval": 10,
+  "use_wandb": false,
+  "experiment_name": "virtual_tryon_makeup"
+}
