@@ -39,17 +39,18 @@ dependencies:
   image_picker: ^1.0.4
   camera: ^0.10.5+5
   image: ^4.1.3
-  
+  cached_network_image: ^3.3.1
+
   # HTTP requests for model inference
   http: ^1.1.0
   dio: ^5.3.2
-  
+
   # State management
   provider: ^6.1.1
-  
+
   # UI components
   flutter_staggered_grid_view: ^0.7.0
-  
+
   # File handling
   path_provider: ^2.1.1
   path: ^1.8.3
@@ -62,7 +63,7 @@ dependencies:
   firebase_analytics: ^10.7.4
   firebase_crashlytics: ^3.4.9
   firebase_messaging: ^14.7.10
-  
+
   # Google Sign-In
   google_sign_in: ^6.1.6
 
@@ -93,6 +94,16 @@ flutter:
     - assets/images/
     - assets/logo.png
     - assets/icons/google.png
+    - assets/icons/ai.png
+    - assets/products/lipsticks/satin.png
+    - assets/products/lipsticks/Hyaluron lip oil.png
+    - assets/products/lipsticks/intense volume matte.png
+    - assets/products/lipsticks/matte resistance.png
+    - assets/products/lipsticks/balm-in lipstick.png
+    - assets/products/lipsticks/8 hours pro lip gloss.png
+    - assets/products/lipsticks/less nus by colour.png
+    - assets/products/lipsticks/reds of worth satin.png
+
 
   # An image asset can refer to one or more resolution-specific "variants", see
   # https://flutter.dev/to/resolution-aware-images
