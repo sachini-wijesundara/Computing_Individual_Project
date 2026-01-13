@@ -1,0 +1,45 @@
+# Flutter/Dart specific
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.packages
+.pub-cache/
+.pub/
+build/
+*.iml
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Python virtual environments
+.venv*/
+venv*/
+env*/
+
+# macOS
+.DS_Store
+
+# Large model files (use Git LFS if needed)
+*.task
+*.tflite
+*.dylib
+*.so
+
+# iOS build artifacts
+ios/Pods/
+ios/.symlinks/
+ios/Flutter/Flutter.framework
+ios/Flutter/Flutter.podspec
+ios/Podfile.lock
+
+# Android build artifacts
+android/.gradle
+android/captures/
+android/local.properties
+android/app/debug
+android/app/profile
+android/app/release
