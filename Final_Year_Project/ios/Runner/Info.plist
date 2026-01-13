@@ -45,5 +45,12 @@
 	<true/>
 	<key>UIApplicationSupportsIndirectInputEvents</key>
 	<true/>
+	<key>NSCameraUsageDescription</key>
+	<string>This app needs camera access for virtual makeup try-on and AR lipstick effects.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>This app may need microphone access for video recording features.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>This app needs photo library access to save and load makeup looks.</string>
+
 </dict>
 </plist>

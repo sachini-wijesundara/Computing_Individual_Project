@@ -4,8 +4,9 @@ import 'package:google_sign_in/google_sign_in.dart';
 import '../firebase/firebase_config.dart';
 
 class FirebaseAuthService {
-  static final FirebaseAuth _auth = FirebaseConfig.auth;
-  static final FirebaseFirestore _firestore = FirebaseConfig.firestore;
+  // Lazy getters instead of static final to avoid initialization before Firebase.initializeApp
+  static FirebaseAuth get _auth => FirebaseConfig.auth;
+  static FirebaseFirestore get _firestore => FirebaseConfig.firestore;
   static final GoogleSignIn _googleSignIn = GoogleSignIn(
     scopes: ['email', 'profile'],
   );

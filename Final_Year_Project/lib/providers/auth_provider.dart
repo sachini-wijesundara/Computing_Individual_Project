@@ -18,10 +18,15 @@ class AuthProvider extends ChangeNotifier {
   }
 
   void _init() {
-    FirebaseAuthService.authStateChanges.listen((User? user) {
-      _user = user;
-      notifyListeners();
-    });
+    try {
+      FirebaseAuthService.authStateChanges.listen((User? user) {
+        _user = user;
+        notifyListeners();
+      });
+    } catch (e) {
+      // Firebase not initialized - user will need to login manually
+      debugPrint('ℹ️ Firebase Auth not available: $e');
+    }
   }
 
   // Sign up with email and password

@@ -1,0 +1,19 @@
+subprojects { subproject ->
+    if (subproject.name == 'flutter_plugin_android_lifecycle') {
+        subproject.afterEvaluate {
+            android {
+                compileSdkVersion 35
+                
+                defaultConfig {
+                    minSdkVersion 21
+                    targetSdkVersion 34
+                }
+                
+                compileOptions {
+                    sourceCompatibility JavaVersion.VERSION_11
+                    targetCompatibility JavaVersion.VERSION_11
+                }
+            }
+        }
+    }
+}
