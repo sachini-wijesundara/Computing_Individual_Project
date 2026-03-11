@@ -151,10 +151,14 @@ class NativeLipRendererController {
   Future<void> setEffect({
     required Color shade,
     required double intensity,
+    String category = "cmd_lipstick",
+    bool isCompareMode = false, // Added
   }) async {
     await _methodChannel.invokeMethod<void>('setEffect', {
       'shade': shade.value,
       'intensity': intensity,
+      'category': category,
+      'isCompareMode': isCompareMode, // Added
     });
   }
 
@@ -169,12 +173,14 @@ class NativeLipRendererController {
     double? offsetY,
     double? scale,
     bool? mirrorX,
+    double? splitPosition, // Added
   }) async {
     await _methodChannel.invokeMethod<void>('setCalibration', {
       if (offsetX != null) 'offsetX': offsetX,
       if (offsetY != null) 'offsetY': offsetY,
       if (scale != null) 'scale': scale,
       if (mirrorX != null) 'mirrorX': mirrorX,
+      if (splitPosition != null) 'splitPosition': splitPosition, // Added
     });
   }
 

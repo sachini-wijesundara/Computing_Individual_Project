@@ -7,6 +7,9 @@ import UIKit
     _ application: UIApplication,
     didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?
   ) -> Bool {
+    let registrar = self.registrar(forPlugin: "NativeLipRendererPlugin")!
+    NativeLipRendererPlugin.register(with: registrar)
+
     // Flutter automatically registers plugins via GeneratedPluginRegistrant
     GeneratedPluginRegistrant.register(with: self)
     return super.application(application, didFinishLaunchingWithOptions: launchOptions)

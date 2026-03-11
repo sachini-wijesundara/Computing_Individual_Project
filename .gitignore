@@ -29,17 +29,24 @@ env*/
 *.dylib
 *.so
 
-# iOS build artifacts
-ios/Pods/
-ios/.symlinks/
-ios/Flutter/Flutter.framework
-ios/Flutter/Flutter.podspec
-ios/Podfile.lock
+# Archives for large data
+*.zip
+*.z[0-9][0-9]
 
-# Android build artifacts
-android/.gradle
-android/captures/
-android/local.properties
-android/app/debug
-android/app/profile
-android/app/release
+# Ignore raw data and media
+datasets/
+**/assets/
+**/training/
+**/datasets/
+*.jpg
+*.jpeg
+*.png
+*.gif
+*.tflite
+*.task
+*.dylib
+*.so
+
+# But allow archives
+!*.zip
+!*.z[0-9][0-9]

@@ -93,18 +93,32 @@ class ProductShowcaseScreen extends StatelessWidget {
                     price: '\$10.99',
                     color: Colors.red,
                     image: 'assets/lipstick_red.png',
+                    category: 'Lip Sticks',
+                    shades: [
+                      {'name': 'Rouge', 'hex': '#FF0000'},
+                      {'name': 'Muted Red', 'hex': '#B22222'},
+                    ],
                   ),
                   Product(
                     name: 'Infallible Pro Matte Lipstick',
                     price: '\$12.99',
                     color: Colors.pink,
                     image: 'assets/lipstick_pink.png',
+                    category: 'Lip Sticks',
+                    shades: [
+                      {'name': 'Candy Pink', 'hex': '#FF69B4'},
+                      {'name': 'Fuschia', 'hex': '#FF00FF'},
+                    ],
                   ),
                   Product(
                     name: 'Colour Riche Nude Lipstick',
                     price: '\$10.99',
                     color: Color(0xFFD4AF8C),
                     image: 'assets/lipstick_nude.png',
+                    category: 'Lip Sticks',
+                    shades: [
+                      {'name': 'Nude', 'hex': '#D4AF8C'},
+                    ],
                   ),
                 ],
               ),
@@ -121,18 +135,21 @@ class ProductShowcaseScreen extends StatelessWidget {
                     price: '\$14.99',
                     color: Color(0xFFF4C2A1),
                     image: 'assets/foundation_light.png',
+                    category: 'Makeup',
                   ),
                   Product(
                     name: 'Infallible Pro Glow',
                     price: '\$16.99',
                     color: Color(0xFFE6B8A2),
                     image: 'assets/foundation_medium.png',
+                    category: 'Makeup',
                   ),
                   Product(
                     name: 'True Match Lumi',
                     price: '\$15.99',
                     color: Color(0xFFD4A574),
                     image: 'assets/foundation_dark.png',
+                    category: 'Makeup',
                   ),
                 ],
               ),
@@ -149,18 +166,28 @@ class ProductShowcaseScreen extends StatelessWidget {
                     price: '\$9.99',
                     color: Colors.black,
                     image: 'assets/mascara_black.png',
+                    category: 'Mascara',
+                    shades: [
+                      {'name': 'Blackest Black', 'hex': '#000000'},
+                    ],
                   ),
                   Product(
                     name: 'Infallible Eyeshadow',
                     price: '\$8.99',
                     color: Colors.purple,
-                    image: 'assets/eyeshadow_purple.png',
+                    image: 'assets/eyshadow_purple.png',
+                    category: 'Makeup',
+                    shades: [
+                      {'name': 'Majestic Purple', 'hex': '#800080'},
+                      {'name': 'Lavender', 'hex': '#E6E6FA'},
+                    ],
                   ),
                   Product(
                     name: 'Voluminous Eyeliner',
                     price: '\$7.99',
                     color: Colors.brown,
                     image: 'assets/eyeliner_brown.png',
+                    category: 'Makeup',
                   ),
                 ],
               ),
@@ -317,12 +344,10 @@ class ProductShowcaseScreen extends StatelessWidget {
   }
 
   void _showVirtualTryOn(BuildContext context, Product product) {
-    showDialog(
-      context: context,
-      builder: (context) => VirtualTryOnPopup(
-        productName: product.name,
-        productImage: product.image,
-        productColor: product.color,
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        fullscreenDialog: true,
+        builder: (_) => const VirtualTryOnLandingPage(),
       ),
     );
   }
@@ -333,15 +358,18 @@ class Product {
   final String price;
   final Color color;
   final String image;
+  final String category;
+  final List<Map<String, String>> shades; // Added
 
   Product({
     required this.name,
     required this.price,
     required this.color,
     required this.image,
+    required this.category,
+    this.shades = const [], // Added
   });
 }
-
 
 
 

@@ -169,7 +169,13 @@ class MainScreen extends StatelessWidget {
                   icon: Icons.camera_alt,
                   title: 'Live Try-On',
                   subtitle: 'Real-time AR makeup',
-                  onTap: () => Navigator.pushNamed(context, '/live_tryon'),
+                  onTap: () => Navigator.push(
+                    context,
+                    LiveTryOnScreen.route(
+                      productName: 'Global Try-On',
+                      productImage: 'assets/face.png',
+                    ),
+                  ),
                   color: const Color(0xFF8B0000),
                 ),
                 const SizedBox(height: 20),

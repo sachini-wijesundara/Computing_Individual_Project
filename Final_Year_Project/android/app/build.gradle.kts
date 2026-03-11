@@ -26,7 +26,7 @@ android {
         applicationId = "com.example.virtual_tryon_makeup"
         // You can update the following values to match your application needs.
         // For more information, see: https://flutter.dev/to/review-gradle-config.
-        minSdk = 21
+        minSdk = flutter.minSdkVersion
             targetSdk = 36
         versionCode = flutter.versionCode
         versionName = flutter.versionName
@@ -43,4 +43,18 @@ android {
 
 flutter {
     source = "../.."
+}
+
+dependencies {
+    // MediaPipe — FaceLandmarker, MPImage, RunningMode, ImageProcessingOptions etc.
+    implementation("com.google.mediapipe:tasks-vision:0.10.14")
+
+    // CameraX — ImageProxy, planes, ImageAnalysis, PreviewView, ProcessCameraProvider
+    implementation("androidx.camera:camera-core:1.3.4")
+    implementation("androidx.camera:camera-camera2:1.3.4")
+    implementation("androidx.camera:camera-lifecycle:1.3.4")
+    implementation("androidx.camera:camera-view:1.3.4")
+
+    // Lifecycle
+    implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.7.0")
 }

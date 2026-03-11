@@ -10482,7 +10482,6 @@ Resolve mutations for :tflite_flutter:writeDebugAarMetadata (Thread[Execution wo
 
 > Task :cloud_firestore:mergeDebugShaders UP-TO-DATE
 Caching disabled for task ':cloud_firestore:mergeDebugShaders' because:
-  Simple merging task
 Skipping task ':cloud_firestore:mergeDebugShaders' as it is up-to-date.
 Resolve mutations for :sqflite_android:writeDebugAarMetadata (Thread[Execution worker Thread 4,5,main]) started.
 :tflite_flutter:writeDebugAarMetadata (Thread[Execution worker Thread 7,5,main]) started.
@@ -10491,7 +10490,6 @@ Resolve mutations for :cloud_firestore:compileDebugShaders (Thread[included buil
 
 > Task :firebase_analytics:mergeDebugShaders UP-TO-DATE
 Caching disabled for task ':firebase_analytics:mergeDebugShaders' because:
-  Simple merging task
 Skipping task ':firebase_analytics:mergeDebugShaders' as it is up-to-date.
 
 > Task :tflite_flutter:writeDebugAarMetadata UP-TO-DATE
@@ -10502,7 +10500,6 @@ Skipping task ':tflite_flutter:writeDebugAarMetadata' as it is up-to-date.
 
 > Task :camera_android:mergeDebugShaders UP-TO-DATE
 Caching disabled for task ':camera_android:mergeDebugShaders' because:
-  Simple merging task
 Skipping task ':camera_android:mergeDebugShaders' as it is up-to-date.
 
 > Task :sqflite_android:writeDebugAarMetadata UP-TO-DATE
@@ -10514,14 +10511,12 @@ Resolve mutations for :camera_android:compileDebugShaders (Thread[Execution work
 
 > Task :firebase_core:mergeDebugShaders UP-TO-DATE
 Caching disabled for task ':firebase_core:mergeDebugShaders' because:
-  Simple merging task
 Skipping task ':firebase_core:mergeDebugShaders' as it is up-to-date.
 Resolve mutations for :firebase_analytics:compileDebugShaders (Thread[Execution worker Thread 3,5,main]) started.
 Resolve mutations for :firebase_core:compileDebugShaders (Thread[Execution worker,5,main]) started.
 
 > Task :firebase_auth:mergeDebugShaders UP-TO-DATE
 Caching disabled for task ':firebase_auth:mergeDebugShaders' because:
-  Simple merging task
 Skipping task ':firebase_auth:mergeDebugShaders' as it is up-to-date.
 :camera_android:compileDebugShaders (Thread[Execution worker Thread 5,5,main]) started.
 Resolve mutations for :firebase_crashlytics:mergeDebugShaders (Thread[Execution worker Thread 7,5,main]) started.
@@ -10543,7 +10538,6 @@ Skipping task ':camera_android:compileDebugShaders' as it has no source files an
 
 > Task :firebase_crashlytics:mergeDebugShaders UP-TO-DATE
 Caching disabled for task ':firebase_crashlytics:mergeDebugShaders' because:
-  Simple merging task
 Skipping task ':firebase_crashlytics:mergeDebugShaders' as it is up-to-date.
 
 > Task :firebase_analytics:compileDebugShaders NO-SOURCE
@@ -10568,7 +10562,6 @@ Skipping task ':firebase_auth:compileDebugShaders' as it has no source files and
 
 > Task :firebase_messaging:mergeDebugShaders UP-TO-DATE
 Caching disabled for task ':firebase_messaging:mergeDebugShaders' because:
-  Simple merging task
 Skipping task ':firebase_messaging:mergeDebugShaders' as it is up-to-date.
 Resolve mutations for :firebase_messaging:compileDebugShaders (Thread[Execution worker Thread 4,5,main]) started.
 Resolve mutations for :firebase_auth:generateDebugAssets (Thread[Execution worker Thread 2,5,main]) started.
@@ -10612,7 +10605,6 @@ Resolve mutations for :firebase_crashlytics:packageDebugAssets (Thread[Execution
 
 > Task :firebase_core:packageDebugAssets UP-TO-DATE
 Caching disabled for task ':firebase_core:packageDebugAssets' because:
-  Simple merging task
 Skipping task ':firebase_core:packageDebugAssets' as it is up-to-date.
 :firebase_crashlytics:packageDebugAssets (Thread[Execution worker Thread 7,5,main]) started.
 Resolve mutations for :firebase_messaging:generateDebugAssets (Thread[Execution worker Thread 4,5,main]) started.
@@ -10623,13 +10615,11 @@ Resolve mutations for :firebase_storage:mergeDebugShaders (Thread[Execution work
 
 > Task :firebase_analytics:packageDebugAssets UP-TO-DATE
 Caching disabled for task ':firebase_analytics:packageDebugAssets' because:
-  Simple merging task
 Skipping task ':firebase_analytics:packageDebugAssets' as it is up-to-date.
 work action resolve out (project :firebase_analytics) (Thread[Execution worker Thread 3,5,main]) started.
 
 > Task :camera_android:packageDebugAssets UP-TO-DATE
 Caching disabled for task ':camera_android:packageDebugAssets' because:
-  Simple merging task
 Skipping task ':camera_android:packageDebugAssets' as it is up-to-date.
 work action resolve out (project :camera_android) (Thread[Execution worker Thread 5,5,main]) started.
 Resolve mutations for :flutter_plugin_android_lifecycle:mergeDebugShaders (Thread[Execution worker Thread 3,5,main]) started.
@@ -10640,12 +10630,10 @@ Resolve mutations for :google_mlkit_commons:mergeDebugShaders (Thread[Execution 
 
 > Task :firebase_auth:packageDebugAssets UP-TO-DATE
 Caching disabled for task ':firebase_auth:packageDebugAssets' because:
-  Simple merging task
 Skipping task ':firebase_auth:packageDebugAssets' as it is up-to-date.
 
 > Task :cloud_firestore:packageDebugAssets UP-TO-DATE
 Caching disabled for task ':cloud_firestore:packageDebugAssets' because:
-  Simple merging task
 Skipping task ':cloud_firestore:packageDebugAssets' as it is up-to-date.
 Resolve mutations for :firebase_messaging:packageDebugAssets (Thread[Execution worker Thread 3,5,main]) started.
 :flutter_plugin_android_lifecycle:mergeDebugShaders (Thread[Execution worker Thread 4,5,main]) started.
@@ -10656,7 +10644,6 @@ Resolve mutations for :google_mlkit_face_detection:mergeDebugShaders (Thread[Exe
 
 > Task :firebase_crashlytics:packageDebugAssets UP-TO-DATE
 Caching disabled for task ':firebase_crashlytics:packageDebugAssets' because:
-  Simple merging task
 Skipping task ':firebase_crashlytics:packageDebugAssets' as it is up-to-date.
 :google_mlkit_face_detection:mergeDebugShaders (Thread[Execution worker Thread 5,5,main]) started.
 work action resolve out (project :firebase_crashlytics) (Thread[Execution worker Thread 7,5,main]) started.
@@ -10666,7 +10653,6 @@ Resolve mutations for :google_sign_in_android:mergeDebugShaders (Thread[included
 
 > Task :firebase_storage:mergeDebugShaders UP-TO-DATE
 Caching disabled for task ':firebase_storage:mergeDebugShaders' because:
-  Simple merging task
 Skipping task ':firebase_storage:mergeDebugShaders' as it is up-to-date.
 Resolve mutations for :firebase_storage:compileDebugShaders (Thread[Execution worker,5,main]) started.
 :firebase_storage:compileDebugShaders (Thread[Execution worker,5,main]) started.
@@ -10674,12 +10660,10 @@ Resolve mutations for :firebase_storage:compileDebugShaders (Thread[Execution wo
 
 > Task :google_mlkit_commons:mergeDebugShaders UP-TO-DATE
 Caching disabled for task ':google_mlkit_commons:mergeDebugShaders' because:
-  Simple merging task
 Skipping task ':google_mlkit_commons:mergeDebugShaders' as it is up-to-date.
 
 > Task :google_mlkit_face_detection:mergeDebugShaders UP-TO-DATE
 Caching disabled for task ':google_mlkit_face_detection:mergeDebugShaders' because:
-  Simple merging task
 Skipping task ':google_mlkit_face_detection:mergeDebugShaders' as it is up-to-date.
 Resolve mutations for :google_mlkit_face_detection:compileDebugShaders (Thread[Execution worker Thread 5,5,main]) started.
 :google_sign_in_android:mergeDebugShaders (Thread[included builds,5,main]) started.
@@ -10687,7 +10671,6 @@ Resolve mutations for :google_mlkit_face_detection:compileDebugShaders (Thread[E
 
 > Task :flutter_plugin_android_lifecycle:mergeDebugShaders UP-TO-DATE
 Caching disabled for task ':flutter_plugin_android_lifecycle:mergeDebugShaders' because:
-  Simple merging task
 Skipping task ':flutter_plugin_android_lifecycle:mergeDebugShaders' as it is up-to-date.
 Resolve mutations for :flutter_plugin_android_lifecycle:compileDebugShaders (Thread[Execution worker Thread 4,5,main]) started.
 
@@ -10697,7 +10680,6 @@ Resolve mutations for :google_mlkit_face_detection:generateDebugAssets (Thread[E
 
 > Task :image_picker_android:mergeDebugShaders UP-TO-DATE
 Caching disabled for task ':image_picker_android:mergeDebugShaders' because:
-  Simple merging task
 Skipping task ':image_picker_android:mergeDebugShaders' as it is up-to-date.
 Resolve mutations for :image_picker_android:compileDebugShaders (Thread[Execution worker Thread 7,5,main]) started.
 Resolve mutations for :google_mlkit_commons:compileDebugShaders (Thread[Execution worker Thread 2,5,main]) started.
@@ -10705,7 +10687,6 @@ Resolve mutations for :google_mlkit_commons:compileDebugShaders (Thread[Executio
 
 > Task :google_sign_in_android:mergeDebugShaders UP-TO-DATE
 Caching disabled for task ':google_sign_in_android:mergeDebugShaders' because:
-  Simple merging task
 Skipping task ':google_sign_in_android:mergeDebugShaders' as it is up-to-date.
 :image_picker_android:compileDebugShaders (Thread[Execution worker Thread 7,5,main]) started.
 
@@ -10719,7 +10700,6 @@ Skipping task ':firebase_storage:generateDebugAssets' as it has no actions.
 
 > Task :firebase_messaging:packageDebugAssets UP-TO-DATE
 Caching disabled for task ':firebase_messaging:packageDebugAssets' because:
-  Simple merging task
 Skipping task ':firebase_messaging:packageDebugAssets' as it is up-to-date.
 Resolve mutations for :firebase_storage:packageDebugAssets (Thread[Execution worker,5,main]) started.
 work action resolve out (project :firebase_messaging) (Thread[Execution worker Thread 3,5,main]) started.
@@ -10753,7 +10733,6 @@ Resolve mutations for :image_picker_android:packageDebugAssets (Thread[Execution
 
 > Task :path_provider_android:mergeDebugShaders UP-TO-DATE
 Caching disabled for task ':path_provider_android:mergeDebugShaders' because:
-  Simple merging task
 Skipping task ':path_provider_android:mergeDebugShaders' as it is up-to-date.
 Resolve mutations for :path_provider_android:compileDebugShaders (Thread[Execution worker Thread 3,5,main]) started.
 :path_provider_android:compileDebugShaders (Thread[Execution worker Thread 3,5,main]) started.
@@ -10772,7 +10751,6 @@ Resolve mutations for :google_sign_in_android:generateDebugAssets (Thread[includ
 
 > Task :google_mlkit_commons:packageDebugAssets UP-TO-DATE
 Caching disabled for task ':google_mlkit_commons:packageDebugAssets' because:
-  Simple merging task
 Skipping task ':google_mlkit_commons:packageDebugAssets' as it is up-to-date.
 :google_sign_in_android:generateDebugAssets (Thread[included builds,5,main]) started.
 
@@ -10786,12 +10764,10 @@ Skipping task ':path_provider_android:generateDebugAssets' as it has no actions.
 
 > Task :firebase_storage:packageDebugAssets UP-TO-DATE
 Caching disabled for task ':firebase_storage:packageDebugAssets' because:
-  Simple merging task
 Skipping task ':firebase_storage:packageDebugAssets' as it is up-to-date.
 
 > Task :image_picker_android:packageDebugAssets UP-TO-DATE
 Caching disabled for task ':image_picker_android:packageDebugAssets' because:
-  Simple merging task
 Skipping task ':image_picker_android:packageDebugAssets' as it is up-to-date.
 work action resolve out (project :google_mlkit_commons) (Thread[Execution worker Thread 7,5,main]) started.
 work action resolve out (project :image_picker_android) (Thread[Execution worker Thread 7,5,main]) started.
@@ -10817,7 +10793,6 @@ Resolve mutations for :path_provider_android:packageDebugAssets (Thread[Executio
 
 > Task :google_sign_in_android:packageDebugAssets UP-TO-DATE
 Caching disabled for task ':google_sign_in_android:packageDebugAssets' because:
-  Simple merging task
 Skipping task ':google_sign_in_android:packageDebugAssets' as it is up-to-date.
 :path_provider_android:packageDebugAssets (Thread[Execution worker Thread 3,5,main]) started.
 work action resolve out (project :google_sign_in_android) (Thread[Execution worker Thread 4,5,main]) started.
@@ -10826,7 +10801,6 @@ Resolve mutations for :cloud_firestore:generateDebugResValues (Thread[Execution 
 
 > Task :path_provider_android:packageDebugAssets UP-TO-DATE
 Caching disabled for task ':path_provider_android:packageDebugAssets' because:
-  Simple merging task
 Skipping task ':path_provider_android:packageDebugAssets' as it is up-to-date.
 work action resolve out (project :path_provider_android) (Thread[Execution worker Thread 3,5,main]) started.
 Resolve mutations for :firebase_analytics:generateDebugResValues (Thread[Execution worker Thread 3,5,main]) started.
@@ -10834,14 +10808,12 @@ Resolve mutations for :firebase_analytics:generateDebugResValues (Thread[Executi
 
 > Task :google_mlkit_face_detection:packageDebugAssets UP-TO-DATE
 Caching disabled for task ':google_mlkit_face_detection:packageDebugAssets' because:
-  Simple merging task
 Skipping task ':google_mlkit_face_detection:packageDebugAssets' as it is up-to-date.
 :flutter_plugin_android_lifecycle:packageDebugAssets (Thread[included builds,5,main]) started.
 work action resolve out (project :google_mlkit_face_detection) (Thread[Execution worker Thread 5,5,main]) started.
 
 > Task :sqflite_android:mergeDebugShaders UP-TO-DATE
 Caching disabled for task ':sqflite_android:mergeDebugShaders' because:
-  Simple merging task
 Skipping task ':sqflite_android:mergeDebugShaders' as it is up-to-date.
 Resolve mutations for :sqflite_android:compileDebugShaders (Thread[Execution worker Thread 2,5,main]) started.
 
@@ -10859,7 +10831,6 @@ Resolve mutations for :camera_android:generateDebugResources (Thread[Execution w
 
 > Task :flutter_plugin_android_lifecycle:packageDebugAssets UP-TO-DATE
 Caching disabled for task ':flutter_plugin_android_lifecycle:packageDebugAssets' because:
-  Simple merging task
 Skipping task ':flutter_plugin_android_lifecycle:packageDebugAssets' as it is up-to-date.
 work action resolve out (project :flutter_plugin_android_lifecycle) (Thread[included builds,5,main]) started.
 Resolve mutations for :firebase_auth:generateDebugResValues (Thread[Execution worker Thread 5,5,main]) started.
@@ -10872,7 +10843,6 @@ Skipping task ':firebase_auth:generateDebugResValues' as it is up-to-date.
 
 > Task :tflite_flutter:mergeDebugShaders UP-TO-DATE
 Caching disabled for task ':tflite_flutter:mergeDebugShaders' because:
-  Simple merging task
 Skipping task ':tflite_flutter:mergeDebugShaders' as it is up-to-date.
 
 > Task :cloud_firestore:generateDebugResValues UP-TO-DATE
@@ -10944,7 +10914,6 @@ Resolve mutations for :firebase_core:generateDebugResources (Thread[included bui
 
 > Task :sqflite_android:packageDebugAssets UP-TO-DATE
 Caching disabled for task ':sqflite_android:packageDebugAssets' because:
-  Simple merging task
 Skipping task ':sqflite_android:packageDebugAssets' as it is up-to-date.
 Resolve mutations for :tflite_flutter:packageDebugAssets (Thread[Execution worker Thread 4,5,main]) started.
 work action resolve out (project :sqflite_android) (Thread[Execution worker Thread 2,5,main]) started.
@@ -10970,7 +10939,6 @@ Resolve mutations for :firebase_messaging:generateDebugResources (Thread[Executi
 
 > Task :tflite_flutter:packageDebugAssets UP-TO-DATE
 Caching disabled for task ':tflite_flutter:packageDebugAssets' because:
-  Simple merging task
 Skipping task ':tflite_flutter:packageDebugAssets' as it is up-to-date.
 :firebase_messaging:generateDebugResources (Thread[Execution worker Thread 2,5,main]) started.
 work action resolve out (project :tflite_flutter) (Thread[Execution worker Thread 4,5,main]) started.
@@ -11945,7 +11913,6 @@ Resolve mutations for :path_provider_android:compileDebugJavaWithJavac (Thread[i
 
 > Task :tflite_flutter:bundleLibCompileToJarDebug UP-TO-DATE
 Caching disabled for task ':tflite_flutter:bundleLibCompileToJarDebug' because:
-  Simple merging task
 Skipping task ':tflite_flutter:bundleLibCompileToJarDebug' as it is up-to-date.
 work action resolve classes.jar (project :tflite_flutter) (Thread[Execution worker Thread 2,5,main]) started.
 :path_provider_android:compileDebugJavaWithJavac (Thread[included builds,5,main]) started.
@@ -12326,7 +12293,6 @@ Resolve mutations for :sqflite_android:bundleLibCompileToJarDebug (Thread[Execut
 
 > Task :google_sign_in_android:bundleLibCompileToJarDebug UP-TO-DATE
 Caching disabled for task ':google_sign_in_android:bundleLibCompileToJarDebug' because:
-  Simple merging task
 Skipping task ':google_sign_in_android:bundleLibCompileToJarDebug' as it is up-to-date.
 
 > Task :firebase_core:compileDebugJavaWithJavac UP-TO-DATE
@@ -12442,21 +12408,18 @@ work action resolve classes.jar (project :google_sign_in_android) (Thread[Execut
 
 > Task :google_mlkit_commons:bundleLibCompileToJarDebug UP-TO-DATE
 Caching disabled for task ':google_mlkit_commons:bundleLibCompileToJarDebug' because:
-  Simple merging task
 Skipping task ':google_mlkit_commons:bundleLibCompileToJarDebug' as it is up-to-date.
 work action resolve classes.jar (project :google_mlkit_commons) (Thread[Execution worker Thread 3,5,main]) started.
 Resolve mutations for :google_mlkit_face_detection:compileDebugJavaWithJavac (Thread[Execution worker Thread 3,5,main]) started.
 
 > Task :firebase_core:bundleLibCompileToJarDebug UP-TO-DATE
 Caching disabled for task ':firebase_core:bundleLibCompileToJarDebug' because:
-  Simple merging task
 Skipping task ':firebase_core:bundleLibCompileToJarDebug' as it is up-to-date.
 work action resolve classes.jar (project :firebase_core) (Thread[Execution worker Thread 5,5,main]) started.
 :google_mlkit_face_detection:compileDebugJavaWithJavac (Thread[Execution worker Thread 3,5,main]) started.
 
 > Task :sqflite_android:bundleLibCompileToJarDebug UP-TO-DATE
 Caching disabled for task ':sqflite_android:bundleLibCompileToJarDebug' because:
-  Simple merging task
 Skipping task ':sqflite_android:bundleLibCompileToJarDebug' as it is up-to-date.
 Resolve mutations for :cloud_firestore:compileDebugJavaWithJavac (Thread[Execution worker Thread 5,5,main]) started.
 Resolve mutations for :firebase_analytics:compileDebugJavaWithJavac (Thread[Execution worker Thread 2,5,main]) started.
@@ -12650,7 +12613,6 @@ Resolve mutations for :flutter_plugin_android_lifecycle:bundleLibCompileToJarDeb
 
 > Task :flutter_plugin_android_lifecycle:bundleLibCompileToJarDebug UP-TO-DATE
 Caching disabled for task ':flutter_plugin_android_lifecycle:bundleLibCompileToJarDebug' because:
-  Simple merging task
 Skipping task ':flutter_plugin_android_lifecycle:bundleLibCompileToJarDebug' as it is up-to-date.
 work action resolve classes.jar (project :flutter_plugin_android_lifecycle) (Thread[Execution worker Thread 4,5,main]) started.
 Resolve mutations for :camera_android:compileDebugJavaWithJavac (Thread[Execution worker Thread 4,5,main]) started.
@@ -12746,7 +12708,6 @@ Resolve mutations for :camera_android:bundleLibCompileToJarDebug (Thread[Executi
 
 > Task :camera_android:bundleLibCompileToJarDebug UP-TO-DATE
 Caching disabled for task ':camera_android:bundleLibCompileToJarDebug' because:
-  Simple merging task
 Skipping task ':camera_android:bundleLibCompileToJarDebug' as it is up-to-date.
 work action resolve classes.jar (project :camera_android) (Thread[Execution worker Thread 4,5,main]) started.
 Resolve mutations for :firebase_storage:compileDebugJavaWithJavac (Thread[Execution worker Thread 4,5,main]) started.
@@ -13186,19 +13147,16 @@ Resolve mutations for :firebase_messaging:bundleLibCompileToJarDebug (Thread[inc
 
 > Task :google_mlkit_face_detection:bundleLibCompileToJarDebug UP-TO-DATE
 Caching disabled for task ':google_mlkit_face_detection:bundleLibCompileToJarDebug' because:
-  Simple merging task
 Skipping task ':google_mlkit_face_detection:bundleLibCompileToJarDebug' as it is up-to-date.
 
 > Task :firebase_messaging:bundleLibCompileToJarDebug UP-TO-DATE
 Caching disabled for task ':firebase_messaging:bundleLibCompileToJarDebug' because:
-  Simple merging task
 Skipping task ':firebase_messaging:bundleLibCompileToJarDebug' as it is up-to-date.
 work action resolve classes.jar (project :firebase_messaging) (Thread[included builds,5,main]) started.
 Resolve mutations for :image_picker_android:compileDebugJavaWithJavac (Thread[included builds,5,main]) started.
 
 > Task :firebase_auth:bundleLibCompileToJarDebug UP-TO-DATE
 Caching disabled for task ':firebase_auth:bundleLibCompileToJarDebug' because:
-  Simple merging task
 Skipping task ':firebase_auth:bundleLibCompileToJarDebug' as it is up-to-date.
 
 > Task :firebase_crashlytics:compileDebugJavaWithJavac UP-TO-DATE
@@ -13788,31 +13746,26 @@ Resolve mutations for :firebase_storage:bundleLibCompileToJarDebug (Thread[Execu
 
 > Task :path_provider_android:bundleLibCompileToJarDebug UP-TO-DATE
 Caching disabled for task ':path_provider_android:bundleLibCompileToJarDebug' because:
-  Simple merging task
 Skipping task ':path_provider_android:bundleLibCompileToJarDebug' as it is up-to-date.
 work action resolve classes.jar (project :path_provider_android) (Thread[Execution worker Thread 3,5,main]) started.
 
 > Task :cloud_firestore:bundleLibCompileToJarDebug UP-TO-DATE
 Caching disabled for task ':cloud_firestore:bundleLibCompileToJarDebug' because:
-  Simple merging task
 Skipping task ':cloud_firestore:bundleLibCompileToJarDebug' as it is up-to-date.
 work action resolve classes.jar (project :cloud_firestore) (Thread[Execution worker Thread 5,5,main]) started.
 
 > Task :firebase_crashlytics:bundleLibCompileToJarDebug UP-TO-DATE
 Caching disabled for task ':firebase_crashlytics:bundleLibCompileToJarDebug' because:
-  Simple merging task
 Skipping task ':firebase_crashlytics:bundleLibCompileToJarDebug' as it is up-to-date.
 
 > Task :firebase_analytics:bundleLibCompileToJarDebug UP-TO-DATE
 Caching disabled for task ':firebase_analytics:bundleLibCompileToJarDebug' because:
-  Simple merging task
 Skipping task ':firebase_analytics:bundleLibCompileToJarDebug' as it is up-to-date.
 work action resolve classes.jar (project :firebase_crashlytics) (Thread[Execution worker,5,main]) started.
 work action resolve classes.jar (project :firebase_analytics) (Thread[Execution worker Thread 2,5,main]) started.
 
 > Task :firebase_storage:bundleLibCompileToJarDebug UP-TO-DATE
 Caching disabled for task ':firebase_storage:bundleLibCompileToJarDebug' because:
-  Simple merging task
 Skipping task ':firebase_storage:bundleLibCompileToJarDebug' as it is up-to-date.
 work action resolve classes.jar (project :firebase_storage) (Thread[Execution worker Thread 4,5,main]) started.
 
@@ -14232,7 +14185,6 @@ Resolve mutations for :app:mergeDebugShaders (Thread[Execution worker Thread 6,5
 
 > Task :app:mergeDebugShaders UP-TO-DATE
 Caching disabled for task ':app:mergeDebugShaders' because:
-  Simple merging task
 Skipping task ':app:mergeDebugShaders' as it is up-to-date.
 Resolve mutations for :app:compileDebugShaders (Thread[Execution worker Thread 6,5,main]) started.
 :app:compileDebugShaders (Thread[Execution worker Thread 6,5,main]) started.
@@ -14341,7 +14293,6 @@ Resolve mutations for :image_picker_android:bundleLibCompileToJarDebug (Thread[i
 
 > Task :image_picker_android:bundleLibCompileToJarDebug UP-TO-DATE
 Caching disabled for task ':image_picker_android:bundleLibCompileToJarDebug' because:
-  Simple merging task
 Skipping task ':image_picker_android:bundleLibCompileToJarDebug' as it is up-to-date.
 work action resolve classes.jar (project :image_picker_android) (Thread[included builds,5,main]) started.
 
@@ -14728,7 +14679,6 @@ Transforming protolite-well-known-types-18.0.0.aar (com.google.firebase:protolit
 Transforming protolite-well-known-types-18.0.0.aar (com.google.firebase:protolite-well-known-types:18.0.0) with ExtractAarTransform
 Transforming protolite-well-known-types-18.0.0.aar (com.google.firebase:protolite-well-known-types:18.0.0) with AarTransform
 Caching disabled for task ':app:mergeDebugAssets' because:
-  Simple merging task
 Task ':app:mergeDebugAssets' is not up-to-date because:
   Output property 'outputDir' file /Users/sachiniwijesundara/development/apps/Final_Year_Project/Final_Year_Project/build/app/intermediates/assets/debug/mergeDebugAssets has been removed.
   Output property 'outputDir' file /Users/sachiniwijesundara/development/apps/Final_Year_Project/Final_Year_Project/build/app/intermediates/assets/debug/mergeDebugAssets/face_landmarker.task has been removed.

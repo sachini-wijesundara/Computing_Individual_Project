@@ -1,265 +1,194 @@
 import 'package:flutter/material.dart';
-import 'package:camera/camera.dart';
-import 'package:image_picker/image_picker.dart';
+import 'full_makeup_screen.dart';
 
-class VirtualTryOnPopup extends StatefulWidget {
-  final String productName;
-  final String productImage;
-  final Color productColor;
+// ── Brand colours ──────────────────────────────────────────────────────────────
+const _maroon  = Color(0xFF7C150D);
+const _roseTop = Color(0xFFF8E4E4);
+const _roseMid = Color(0xFFEBABAD);
+const _roseBot = Color(0xFFD47070);
 
-  const VirtualTryOnPopup({
-    Key? key,
-    required this.productName,
-    required this.productImage,
-    required this.productColor,
-  }) : super(key: key);
+/// Full-screen virtual try-on landing page (shown from nav bar).
+/// Matches the La Vogue Vista "VIRTUAL TRY-ON" brand screen.
+class VirtualTryOnLandingPage extends StatelessWidget {
+  const VirtualTryOnLandingPage({super.key});
 
-  @override
-  _VirtualTryOnPopupState createState() => _VirtualTryOnPopupState();
-}
-
-class _VirtualTryOnPopupState extends State<VirtualTryOnPopup> {
   @override
   Widget build(BuildContext context) {
-    return Dialog(
-      backgroundColor: Colors.transparent,
-      child: Container(
-        width: MediaQuery.of(context).size.width * 0.9,
-        height: MediaQuery.of(context).size.height * 0.6,
-        decoration: BoxDecoration(
-          color: Color(0xFFF5E6E8), // L'Oréal skin tone background
-          borderRadius: BorderRadius.circular(20),
-          boxShadow: [
-            BoxShadow(
-              color: Colors.black.withOpacity(0.3),
-              blurRadius: 20,
-              offset: Offset(0, 10),
-            ),
-          ],
+    return Scaffold(
+      body: Container(
+        width: double.infinity,
+        height: double.infinity,
+        decoration: const BoxDecoration(
+          gradient: LinearGradient(
+            begin: Alignment.topCenter,
+            end: Alignment.bottomCenter,
+            colors: [_roseTop, _roseMid, _roseBot],
+            stops: [0.0, 0.65, 1.0],
+          ),
         ),
-        child: Column(
-          children: [
-            // Header
-            Container(
-              padding: EdgeInsets.all(20),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          'L\'ORÉAL PARIS',
-                          style: TextStyle(
-                            fontSize: 18,
-                            fontWeight: FontWeight.bold,
-                            color: Colors.black,
-                            letterSpacing: 1.2,
-                          ),
-                        ),
-                        SizedBox(height: 8),
-                        Text(
-                          'VIRTUAL TRY-ON',
-                          style: TextStyle(
-                            fontSize: 24,
-                            fontWeight: FontWeight.bold,
-                            color: Colors.black,
-                            letterSpacing: 1.5,
-                          ),
-                        ),
-                        SizedBox(height: 8),
-                        Text(
-                          'For the best Virtual Try-On experience,\nplease use Safari on iOS and Chrome on Android.',
-                          style: TextStyle(
-                            fontSize: 14,
-                            color: Colors.black87,
-                            height: 1.3,
-                          ),
-                        ),
-                      ],
-                    ),
+        child: SafeArea(
+          child: Column(
+            children: [
+              // ── Close button ───────────────────────────────────────────────
+              Align(
+                alignment: Alignment.topRight,
+                child: Padding(
+                  padding: const EdgeInsets.only(top: 8, right: 12),
+                  child: IconButton(
+                    icon: const Icon(Icons.close_rounded, color: _maroon, size: 26),
+                    onPressed: () => Navigator.of(context).maybePop(),
                   ),
-                  GestureDetector(
-                    onTap: () => Navigator.pop(context),
-                    child: Container(
-                      width: 30,
-                      height: 30,
-                      decoration: BoxDecoration(
-                        color: Colors.black.withOpacity(0.1),
-                        shape: BoxShape.circle,
-                      ),
-                      child: Icon(
-                        Icons.close,
-                        color: Colors.black,
-                        size: 20,
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-            
-            // Product Preview
-            Expanded(
-              child: Container(
-                margin: EdgeInsets.symmetric(horizontal: 20),
-                decoration: BoxDecoration(
-                  color: Colors.white,
-                  borderRadius: BorderRadius.circular(15),
-                  boxShadow: [
-                    BoxShadow(
-                      color: Colors.black.withOpacity(0.1),
-                      blurRadius: 10,
-                      offset: Offset(0, 5),
-                    ),
-                  ],
                 ),
+              ),
+
+              // ── Logo + brand name ──────────────────────────────────────────
+              const Spacer(),
+              _BrandLogo(),
+              const SizedBox(height: 12),
+              const Text(
+                'LA VOGUE VISTA',
+                style: TextStyle(
+                  fontSize: 22,
+                  fontWeight: FontWeight.w900,
+                  color: _maroon,
+                  letterSpacing: 4,
+                ),
+              ),
+              const SizedBox(height: 40),
+
+              // ── Tagline ────────────────────────────────────────────────────
+              const Text(
+                'VIRTUAL TRY - ON',
+                style: TextStyle(
+                  fontSize: 20,
+                  fontWeight: FontWeight.w800,
+                  color: _maroon,
+                  letterSpacing: 2,
+                ),
+              ),
+              const SizedBox(height: 6),
+              const Padding(
+                padding: EdgeInsets.symmetric(horizontal: 40),
+                child: Text(
+                  'Try on any product instantly with our AI-powered camera.',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(fontSize: 13, color: _maroon, height: 1.5),
+                ),
+              ),
+              const Spacer(),
+
+              // ── Action buttons ─────────────────────────────────────────────
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 32),
                 child: Column(
                   children: [
-                    // Product Image
-                    Expanded(
-                      flex: 2,
-                      child: Container(
-                        decoration: BoxDecoration(
-                          borderRadius: BorderRadius.only(
-                            topLeft: Radius.circular(15),
-                            topRight: Radius.circular(15),
-                          ),
-                          gradient: LinearGradient(
-                            begin: Alignment.topCenter,
-                            end: Alignment.bottomCenter,
-                            colors: [
-                              Color(0xFFF5E6E8),
-                              Color(0xFFE8D5D8),
-                            ],
+                    // Live Try-ON
+                    SizedBox(
+                      width: double.infinity,
+                      height: 52,
+                      child: ElevatedButton(
+                        onPressed: () => Navigator.of(context).push(
+                          MaterialPageRoute(
+                            builder: (_) => const FullMakeupTryOnScreen(mode: TryOnMode.live),
                           ),
                         ),
-                        child: Center(
-                          child: Container(
-                            width: 80,
-                            height: 80,
-                            decoration: BoxDecoration(
-                              color: widget.productColor,
-                              shape: BoxShape.circle,
-                              boxShadow: [
-                                BoxShadow(
-                                  color: widget.productColor.withOpacity(0.3),
-                                  blurRadius: 20,
-                                  offset: Offset(0, 10),
-                                ),
-                              ],
-                            ),
-                            child: Icon(
-                              Icons.face_retouching_natural,
-                              color: Colors.white,
-                              size: 40,
-                            ),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: _maroon,
+                          foregroundColor: Colors.white,
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(28),
                           ),
+                          elevation: 4,
+                          shadowColor: _maroon.withValues(alpha: 0.4),
                         ),
-                      ),
-                    ),
-                    
-                    // Product Info
-                    Expanded(
-                      flex: 1,
-                      child: Padding(
-                        padding: EdgeInsets.all(20),
-                        child: Column(
+                        child: const Row(
+                          mainAxisAlignment: MainAxisAlignment.center,
                           children: [
-                            Text(
-                              widget.productName,
-                              style: TextStyle(
-                                fontSize: 18,
-                                fontWeight: FontWeight.bold,
-                                color: Colors.black,
-                              ),
-                            ),
-                            SizedBox(height: 8),
-                            Text(
-                              'Try on this product virtually',
-                              style: TextStyle(
-                                fontSize: 14,
-                                color: Colors.grey.shade600,
-                              ),
-                            ),
+                            Icon(Icons.camera_alt_rounded, size: 20),
+                            SizedBox(width: 8),
+                            Text('Live Try-ON',
+                                style: TextStyle(
+                                    fontSize: 16, fontWeight: FontWeight.w800)),
                           ],
                         ),
                       ),
                     ),
+                    const SizedBox(height: 14),
+
+                    // Upload Photo
+                    SizedBox(
+                      width: double.infinity,
+                      height: 52,
+                      child: OutlinedButton(
+                        onPressed: () => Navigator.of(context).push(
+                          MaterialPageRoute(
+                            builder: (_) => const FullMakeupTryOnScreen(mode: TryOnMode.uploadPhoto),
+                          ),
+                        ),
+                        style: OutlinedButton.styleFrom(
+                          foregroundColor: _maroon,
+                          side: const BorderSide(color: _maroon, width: 1.8),
+                          backgroundColor: Colors.white.withValues(alpha: 0.55),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(28),
+                          ),
+                        ),
+                        child: const Row(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            Icon(Icons.photo_library_outlined, size: 20),
+                            SizedBox(width: 8),
+                            Text('Upload Photo',
+                                style: TextStyle(
+                                    fontSize: 16, fontWeight: FontWeight.w700)),
+                          ],
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 36),
                   ],
                 ),
               ),
-            ),
-            
-            // Action Buttons
-            Padding(
-              padding: EdgeInsets.all(20),
-              child: Column(
-                children: [
-                  // Selfie Mode Button
-                  SizedBox(
-                    width: double.infinity,
-                    height: 50,
-                    child: ElevatedButton(
-                      onPressed: () => _startSelfieMode(),
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: Colors.black,
-                        foregroundColor: Colors.white,
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(25),
-                        ),
-                        elevation: 0,
-                      ),
-                      child: Row(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          Icon(Icons.camera_alt, size: 20),
-                          SizedBox(width: 8),
-                          Text(
-                            'Selfie mode',
-                            style: TextStyle(
-                              fontSize: 16,
-                              fontWeight: FontWeight.bold,
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-                  
-                  SizedBox(height: 12),
-                  
-                  // Upload Photo Button
-                  SizedBox(
-                    width: double.infinity,
-                    height: 50,
-                    child: OutlinedButton(
-                      onPressed: () => _uploadPhoto(),
-                      style: OutlinedButton.styleFrom(
-                        foregroundColor: Colors.black,
-                        side: BorderSide(color: Colors.black, width: 2),
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(25),
-                        ),
-                      ),
-                      child: Row(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          Icon(Icons.photo_library, size: 20),
-                          SizedBox(width: 8),
-                          Text(
-                            'Upload photo',
-                            style: TextStyle(
-                              fontSize: 16,
-                              fontWeight: FontWeight.bold,
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-                ],
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// ── Brand logo widget (monogram LW in a circle) ───────────────────────────────
+class _BrandLogo extends StatelessWidget {
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: 110,
+      height: 110,
+      decoration: BoxDecoration(
+        shape: BoxShape.circle,
+        color: Colors.white.withValues(alpha: 0.4),
+        border: Border.all(color: _maroon.withValues(alpha: 0.3), width: 2),
+      ),
+      child: Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            // Stylised "LW" monogram drawn with text
+            ShaderMask(
+              shaderCallback: (bounds) => const LinearGradient(
+                colors: [_maroon, Color(0xFFB84A4A)],
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+              ).createShader(bounds),
+              child: const Text(
+                'LW',
+                style: TextStyle(
+                  fontSize: 42,
+                  fontWeight: FontWeight.w900,
+                  color: Colors.white,
+                  letterSpacing: -4,
+                  height: 1,
+                ),
               ),
             ),
           ],
@@ -267,20 +196,4 @@ class _VirtualTryOnPopupState extends State<VirtualTryOnPopup> {
       ),
     );
   }
-
-  void _startSelfieMode() {
-    Navigator.pop(context);
-    // Navigate to camera screen
-    Navigator.pushNamed(context, '/live_tryon');
-  }
-
-  void _uploadPhoto() {
-    Navigator.pop(context);
-    // Navigate to gallery screen
-    Navigator.pushNamed(context, '/gallery');
-  }
 }
-
-
-
-

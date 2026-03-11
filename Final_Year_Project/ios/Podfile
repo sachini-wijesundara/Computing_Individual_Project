@@ -33,6 +33,9 @@ target 'Runner' do
 
   flutter_install_all_ios_pods File.dirname(File.realpath(__FILE__))
   
+  # MediaPipe for iOS Face Tracking
+  pod 'MediaPipeTasksVision'
+
   target 'RunnerTests' do
     inherit! :search_paths
   end

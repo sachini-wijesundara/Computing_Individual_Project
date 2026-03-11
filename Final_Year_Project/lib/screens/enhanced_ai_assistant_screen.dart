@@ -1,736 +1,546 @@
+// lib/screens/enhanced_ai_assistant_screen.dart
+//
+// Beauty Analysis — pixel-matched to the design screenshots.
+// Dark brownish-maroon bg, AI badge, SKIN/HAIR pill tabs, photo area,
+// circular-avatar result card, product card rows, lightbulb care tips.
+
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
-import 'dart:io';
-import 'dart:math';
+import '../services/tflite_analysis_service.dart';
+import '../services/gemini_chat_service.dart';
 
+// ── Palette ───────────────────────────────────────────────────────────────────
+const _bg       = Color(0xFF111111);   // neutral dark (matches screenshot)
+const _surface  = Color(0xFF1C1C1C);   // card / surface
+const _tabDark  = Color(0xFF242424);   // inactive tab
+const _red      = Color(0xFFC41E3A);   // brand red (active tab, buttons)
+const _gold     = Color(0xFFD4A843);   // RECOMMENDED PRODUCTS / CARE TIPS headers
+const _muted    = Color(0xFF888888);   // subtitle / label text
+
+// ═════════════════════════════════════════════════════════════════════════════
 class EnhancedAIAssistantScreen extends StatefulWidget {
+  const EnhancedAIAssistantScreen({super.key});
   @override
-  _EnhancedAIAssistantScreenState createState() => _EnhancedAIAssistantScreenState();
+  State<EnhancedAIAssistantScreen> createState() =>
+      _EnhancedAIAssistantScreenState();
 }
 
-class _EnhancedAIAssistantScreenState extends State<EnhancedAIAssistantScreen>
-    with TickerProviderStateMixin {
-  final ImagePicker _picker = ImagePicker();
-  File? _selectedImage;
-  bool _isAnalyzing = false;
-  SkinToneAnalysis? _analysis;
-  
-  late AnimationController _pulseController;
-  late AnimationController _scanController;
-  late Animation<double> _pulseAnimation;
-  late Animation<double> _scanAnimation;
+class _EnhancedAIAssistantScreenState
+    extends State<EnhancedAIAssistantScreen> {
+  final _tflite = TFLiteAnalysisService();
+  final _gemini = GeminiChatService();
+  final _picker = ImagePicker();
 
-  @override
-  void initState() {
-    super.initState();
-    _pulseController = AnimationController(
-      duration: Duration(seconds: 2),
-      vsync: this,
-    );
-    _scanController = AnimationController(
-      duration: Duration(seconds: 3),
-      vsync: this,
-    );
-    
-    _pulseAnimation = Tween<double>(begin: 0.8, end: 1.2).animate(
-      CurvedAnimation(parent: _pulseController, curve: Curves.easeInOut),
-    );
-    _scanAnimation = Tween<double>(begin: 0.0, end: 1.0).animate(
-      CurvedAnimation(parent: _scanController, curve: Curves.easeInOut),
-    );
-    
-    _pulseController.repeat(reverse: true);
+  int  _tab          = 0;   // 0=SKIN  1=HAIR
+  bool _analyzing    = false;
+  bool _tipsExpanded = false;
+
+  File?           _image;
+  SkinToneResult? _skin;
+  HairResult?     _hair;
+
+  // ── Pick image ─────────────────────────────────────────────────────────────
+  Future<void> _selfie() async {
+    final f = await _picker.pickImage(source: ImageSource.camera, imageQuality: 85);
+    if (f != null) _analyze(File(f.path));
+  }
+  Future<void> _upload() async {
+    final f = await _picker.pickImage(source: ImageSource.gallery, imageQuality: 85);
+    if (f != null) _analyze(File(f.path));
   }
 
-  @override
-  void dispose() {
-    _pulseController.dispose();
-    _scanController.dispose();
-    super.dispose();
-  }
-
-  Future<void> _pickImage() async {
-    final XFile? image = await _picker.pickImage(source: ImageSource.gallery);
-    if (image != null) {
-      setState(() {
-        _selectedImage = File(image.path);
-        _isAnalyzing = true;
-      });
-      
-      // Simulate AI analysis
-      await _analyzeSkinTone();
+  // ── Analyze ────────────────────────────────────────────────────────────────
+  Future<void> _analyze(File file) async {
+    setState(() { _image = file; _analyzing = true; _skin = null; _hair = null; });
+    try {
+      await _tflite.initialize();
+      final skin = await _tflite.analyzeSkin(file);
+      final hair = await _tflite.analyzeHair(file);
+      _gemini.setBeautyProfile(BeautyProfile(
+        skinTone: skin.skinTone, undertone: skin.undertone,
+        hairType: hair.hairType, hairColor: hair.hairColor,
+        inferenceMode: '${skin.inferenceMode}/${hair.inferenceMode}',
+      ));
+      if (!mounted) return;
+      setState(() { _skin = skin; _hair = hair; _analyzing = false; });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() { _analyzing = false; });
     }
   }
 
-  Future<void> _takePhoto() async {
-    final XFile? image = await _picker.pickImage(source: ImageSource.camera);
-    if (image != null) {
-      setState(() {
-        _selectedImage = File(image.path);
-        _isAnalyzing = true;
-      });
-      
-      // Simulate AI analysis
-      await _analyzeSkinTone();
-    }
-  }
-
-  Future<void> _analyzeSkinTone() async {
-    // Simulate AI processing time
-    await Future.delayed(Duration(seconds: 3));
-    
-    // Simulate trained model analysis
-    final analysis = _simulateSkinToneAnalysis();
-    
-    setState(() {
-      _analysis = analysis;
-      _isAnalyzing = false;
-    });
-  }
-
-  SkinToneAnalysis _simulateSkinToneAnalysis() {
-    // Simulate AI model results
-    final skinTones = ['Fair', 'Light', 'Medium', 'Tan', 'Deep'];
-    final undertones = ['Cool', 'Warm', 'Neutral'];
-    final selectedTone = skinTones[Random().nextInt(skinTones.length)];
-    final selectedUndertone = undertones[Random().nextInt(undertones.length)];
-    
-    return SkinToneAnalysis(
-      skinTone: selectedTone,
-      undertone: selectedUndertone,
-      confidence: 0.85 + Random().nextDouble() * 0.15,
-      recommendations: _generateRecommendations(selectedTone, selectedUndertone),
+  // ─────────────────────────────────────────────────────────────────────────
+  @override
+  Widget build(BuildContext context) {
+    final hasResult = (_tab == 0 ? _skin : _hair) != null;
+    return Scaffold(
+      backgroundColor: _bg,
+      body: SafeArea(child: Column(children: [
+        // ── Header ──────────────────────────────────────────────────────
+        _header(),
+        const SizedBox(height: 16),
+        // ── SKIN / HAIR tabs ─────────────────────────────────────────────
+        _tabs(),
+        const SizedBox(height: 16),
+        // ── Scrollable body ──────────────────────────────────────────────
+        Expanded(child: SingleChildScrollView(
+          child: Column(children: [
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+              child: Column(children: [
+                // ── Big photo area ────────────────────────
+                _photoArea(),
+                const SizedBox(height: 16),
+                // ── Action buttons ──────────────────────────────
+                _actionButtons(),
+                const SizedBox(height: 16),
+                // ── Result card or Tips ─────────────────────────
+                if (hasResult)
+                  _tab == 0 ? _skinCard() : _hairCard()
+                else
+                  _tips(),
+              ]),
+            ),
+            const SizedBox(height: 24),
+          ]),
+        )),
+      ])),
     );
   }
 
-  List<MakeupRecommendation> _generateRecommendations(String skinTone, String undertone) {
-    List<MakeupRecommendation> recommendations = [];
-    
-    // Foundation recommendations
-    recommendations.add(MakeupRecommendation(
-      category: 'Foundation',
-      product: _getFoundationRecommendation(skinTone, undertone),
-      color: _getFoundationColor(skinTone, undertone),
-      brand: 'L\'Oréal Paris',
-      price: '\$${25 + Random().nextInt(30)}',
-      confidence: 0.9,
-    ));
-    
-    // Blush recommendations
-    recommendations.add(MakeupRecommendation(
-      category: 'Blush',
-      product: _getBlushRecommendation(skinTone, undertone),
-      color: _getBlushColor(skinTone, undertone),
-      brand: 'Maybelline',
-      price: '\$${8 + Random().nextInt(12)}',
-      confidence: 0.85,
-    ));
-    
-    // Lipstick recommendations
-    recommendations.add(MakeupRecommendation(
-      category: 'Lipstick',
-      product: _getLipstickRecommendation(skinTone, undertone),
-      color: _getLipstickColor(skinTone, undertone),
-      brand: 'Revlon',
-      price: '\$${12 + Random().nextInt(18)}',
-      confidence: 0.88,
-    ));
-    
-    // Eyeshadow recommendations
-    recommendations.add(MakeupRecommendation(
-      category: 'Eyeshadow',
-      product: _getEyeshadowRecommendation(skinTone, undertone),
-      color: _getEyeshadowColor(skinTone, undertone),
-      brand: 'Urban Decay',
-      price: '\$${20 + Random().nextInt(25)}',
-      confidence: 0.82,
-    ));
-    
-    return recommendations;
+  // ─────────────────────────────────────────────────────────────────────────
+  // Header
+  Widget _header() {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Row(children: [
+          // AI badge — red square with icon
+          Container(
+            width: 32, height: 32,
+            decoration: BoxDecoration(
+              color: _red, borderRadius: BorderRadius.circular(6)),
+            child: const Icon(Icons.auto_awesome, color: Colors.white, size: 18),
+          ),
+          const SizedBox(width: 8),
+          const Text('LA VOGUE VISTA',
+            style: TextStyle(color: _red, fontSize: 12,
+                fontWeight: FontWeight.w800, letterSpacing: 1.2)),
+          const Spacer(),
+          GestureDetector(
+            onTap: () => Navigator.of(context).maybePop(),
+            child: const Icon(Icons.close, color: Colors.white38, size: 20)),
+        ]),
+        const SizedBox(height: 8),
+        const Text('BEAUTY ANALYSIS',
+          style: TextStyle(color: Colors.white, fontSize: 28,
+              fontWeight: FontWeight.w900, letterSpacing: 0.5)),
+        const SizedBox(height: 2),
+        const Text('On-device AI powered by TFLite models',
+          style: TextStyle(color: _muted, fontSize: 12)),
+      ]),
+    );
   }
 
-  String _getFoundationRecommendation(String skinTone, String undertone) {
-    if (skinTone == 'Fair' && undertone == 'Cool') return 'True Match Foundation - Cool Ivory';
-    if (skinTone == 'Fair' && undertone == 'Warm') return 'True Match Foundation - Warm Ivory';
-    if (skinTone == 'Medium' && undertone == 'Cool') return 'True Match Foundation - Cool Beige';
-    if (skinTone == 'Medium' && undertone == 'Warm') return 'True Match Foundation - Warm Beige';
-    if (skinTone == 'Deep' && undertone == 'Cool') return 'True Match Foundation - Cool Deep';
-    return 'True Match Foundation - Neutral';
+  // Tabs
+  Widget _tabs() {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16),
+      child: Row(children: [
+        _TabPill(label: 'SKIN',  icon: Icons.face_retouching_natural_outlined,
+            active: _tab == 0, onTap: () => setState(() => _tab = 0)),
+        const SizedBox(width: 10),
+        _TabPill(label: 'HAIR',  icon: Icons.self_improvement_outlined,
+            active: _tab == 1, onTap: () => setState(() => _tab = 1)),
+      ]),
+    );
   }
 
-  String _getFoundationColor(String skinTone, String undertone) {
-    if (skinTone == 'Fair') return undertone == 'Cool' ? 'Cool Ivory' : 'Warm Ivory';
-    if (skinTone == 'Medium') return undertone == 'Cool' ? 'Cool Beige' : 'Warm Beige';
-    if (skinTone == 'Deep') return undertone == 'Cool' ? 'Cool Deep' : 'Warm Deep';
-    return 'Neutral Beige';
+  // ── Photo area (landing) ───────────────────────────────────────────────────
+  Widget _photoArea() {
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(12),
+      child: SizedBox(
+        width: double.infinity,
+        height: 300,
+        child: _image == null
+            // ── Empty state ─────────────────────────────────────────────────
+            ? Container(
+                color: _surface,
+                child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
+                  Container(
+                    width: 64, height: 64,
+                    decoration: BoxDecoration(
+                      border: Border.all(color: Colors.white24, width: 1.5),
+                      borderRadius: BorderRadius.circular(16)),
+                    child: const Icon(Icons.photo_camera_outlined,
+                        color: Colors.white38, size: 32),
+                  ),
+                  const SizedBox(height: 16),
+                  const Text('Take or upload a photo',
+                    style: TextStyle(color: Colors.white, fontSize: 15,
+                        fontWeight: FontWeight.w600)),
+                  const SizedBox(height: 6),
+                  const Text(
+                    'For best results, use good lighting\nand face the camera directly',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(color: _muted, fontSize: 13, height: 1.5)),
+                ]),
+              )
+            // ── Image preview ────────────────────────────────────────────────
+            : Stack(fit: StackFit.expand, children: [
+                Image.file(_image!, fit: BoxFit.cover),
+
+                // Analysing overlay
+                if (_analyzing)
+                  const ColoredBox(color: Color(0x8C000000),
+                    child: Center(child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        CircularProgressIndicator(color: _red, strokeWidth: 3),
+                        SizedBox(height: 12),
+                        Text('Analysing features…',
+                          style: TextStyle(color: Colors.white, fontSize: 13,
+                              fontWeight: FontWeight.w600)),
+                      ],
+                    ))),
+
+                // ── Reset/Refresh icon ── top right
+                if (!_analyzing && _image != null)
+                  Positioned(
+                    top: 10, right: 10,
+                    child: GestureDetector(
+                      onTap: () => setState(() { _image = null; _skin = null; _hair = null; }),
+                      child: Container(
+                        padding: const EdgeInsets.all(8),
+                        decoration: BoxDecoration(
+                          color: Colors.black45,
+                          shape: BoxShape.circle,
+                          border: Border.all(color: Colors.white24, width: 1.5),
+                        ),
+                        child: const Icon(Icons.refresh_rounded, color: Colors.white, size: 18),
+                      ),
+                    ),
+                  ),
+
+              ]),
+      ),
+    );
   }
 
-  String _getBlushRecommendation(String skinTone, String undertone) {
-    if (skinTone == 'Fair') return 'Fit Me Blush - Light Pink';
-    if (skinTone == 'Medium') return 'Fit Me Blush - Rose';
-    if (skinTone == 'Deep') return 'Fit Me Blush - Deep Rose';
-    return 'Fit Me Blush - Natural';
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Action buttons
+  Widget _actionButtons() {
+    return Row(children: [
+      Expanded(child: _PillBtn(
+        label: 'SELFIE MODE', icon: Icons.camera_alt_rounded,
+        color: _red, onTap: _selfie)),
+      const SizedBox(width: 10),
+      Expanded(child: _PillBtn(
+        label: 'UPLOAD PHOTO', icon: Icons.photo_library_outlined,
+        color: _tabDark, onTap: _upload,
+        border: Border.all(color: Colors.white24))),
+    ]);
   }
 
-  String _getBlushColor(String skinTone, String undertone) {
-    if (skinTone == 'Fair') return 'Light Pink';
-    if (skinTone == 'Medium') return 'Rose';
-    if (skinTone == 'Deep') return 'Deep Rose';
-    return 'Natural';
+  // ─────────────────────────────────────────────────────────────────────────
+  // SKIN result card
+  Widget _skinCard() {
+    final s = _skin!;
+    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      // Avatar + heading
+      _resultHeading(
+        icon: Icons.face_retouching_natural_outlined,
+        val1: s.skinTone, val2: s.undertone,
+        lbl1: 'Skin Tone', lbl2: 'Undertone',
+        mode: s.inferenceMode, confidence: s.confidence,
+      ),
+      const SizedBox(height: 20),
+      _sectionHeader('RECOMMENDED PRODUCTS'),
+      const SizedBox(height: 8),
+      ...s.makeupRecommendations.entries.map((e) => _productRow(e.key, e.value)),
+    ]);
   }
 
-  String _getLipstickRecommendation(String skinTone, String undertone) {
-    if (skinTone == 'Fair' && undertone == 'Cool') return 'Super Lustrous - Cool Pink';
-    if (skinTone == 'Fair' && undertone == 'Warm') return 'Super Lustrous - Warm Pink';
-    if (skinTone == 'Medium' && undertone == 'Cool') return 'Super Lustrous - Cool Rose';
-    if (skinTone == 'Medium' && undertone == 'Warm') return 'Super Lustrous - Warm Rose';
-    if (skinTone == 'Deep' && undertone == 'Cool') return 'Super Lustrous - Cool Berry';
-    return 'Super Lustrous - Neutral';
+  // HAIR result card
+  Widget _hairCard() {
+    final h = _hair!;
+    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      _resultHeading(
+        icon: Icons.self_improvement_outlined,
+        val1: h.hairType, val2: h.hairColor,
+        lbl1: 'Hair Type', lbl2: 'Hair Color',
+        mode: h.inferenceMode, confidence: h.confidence,
+      ),
+      const SizedBox(height: 20),
+      _sectionHeader('RECOMMENDED PRODUCTS'),
+      const SizedBox(height: 8),
+      ...h.productRecommendations.entries.map((e) => _productRow(e.key, e.value)),
+      const SizedBox(height: 20),
+      _sectionHeader('CARE TIPS'),
+      const SizedBox(height: 8),
+      ...h.careTips.map((t) => _careTipRow(t)),
+    ]);
   }
 
-  String _getLipstickColor(String skinTone, String undertone) {
-    if (skinTone == 'Fair') return undertone == 'Cool' ? 'Cool Pink' : 'Warm Pink';
-    if (skinTone == 'Medium') return undertone == 'Cool' ? 'Cool Rose' : 'Warm Rose';
-    if (skinTone == 'Deep') return undertone == 'Cool' ? 'Cool Berry' : 'Warm Berry';
-    return 'Neutral';
+  // ─────────────────────────────────────────────────────────────────────────
+  // Result heading widget
+  Widget _resultHeading({
+    required IconData icon,
+    required String val1, required String val2,
+    required String lbl1, required String lbl2,
+    required String mode, required double confidence,
+  }) {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: _surface, borderRadius: BorderRadius.circular(14)),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Row(children: [
+          // Circular icon avatar
+          Container(
+            width: 52, height: 52,
+            decoration: BoxDecoration(
+              color: const Color(0xFF3A2020),
+              shape: BoxShape.circle),
+            child: Icon(icon, color: _gold, size: 26),
+          ),
+          const SizedBox(width: 14),
+          Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            // "Wavy · Brown"
+            RichText(text: TextSpan(
+              style: const TextStyle(fontSize: 22, fontWeight: FontWeight.w900,
+                  color: Colors.white, letterSpacing: 0.3),
+              children: [
+                TextSpan(text: val1),
+                const TextSpan(text: '  ·  ',
+                  style: TextStyle(color: _muted, fontWeight: FontWeight.w300)),
+                TextSpan(text: val2),
+              ],
+            )),
+            const SizedBox(height: 4),
+            Text('$lbl1   ·   $lbl2',
+              style: const TextStyle(color: _muted, fontSize: 12)),
+            const SizedBox(height: 6),
+            // Mode badge
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
+              decoration: BoxDecoration(
+                color: const Color(0xFF2A1515),
+                borderRadius: BorderRadius.circular(20),
+                border: Border.all(color: Colors.white12)),
+              child: Text(_modeLabel(mode),
+                style: const TextStyle(color: Colors.white70, fontSize: 11)),
+            ),
+          ])),
+        ]),
+        const SizedBox(height: 14),
+        // Confidence row
+        Row(children: [
+          const Text('Confidence',
+            style: TextStyle(color: _muted, fontSize: 13)),
+          const Spacer(),
+          Text('${(confidence * 100).toStringAsFixed(1)}%',
+            style: const TextStyle(color: _gold, fontSize: 13,
+                fontWeight: FontWeight.w700)),
+        ]),
+        const SizedBox(height: 6),
+        ClipRRect(
+          borderRadius: BorderRadius.circular(4),
+          child: LinearProgressIndicator(
+            value: confidence,
+            backgroundColor: const Color(0xFF2A1515),
+            color: _red,
+            minHeight: 5,
+          ),
+        ),
+      ]),
+    );
   }
 
-  String _getEyeshadowRecommendation(String skinTone, String undertone) {
-    if (skinTone == 'Fair') return 'Naked Palette - Light Neutrals';
-    if (skinTone == 'Medium') return 'Naked Palette - Medium Neutrals';
-    if (skinTone == 'Deep') return 'Naked Palette - Deep Neutrals';
-    return 'Naked Palette - Universal';
+  String _modeLabel(String m) {
+    if (m.contains('server')) return 'Server Analysis';
+    return 'Pixel Analysis';
   }
 
-  String _getEyeshadowColor(String skinTone, String undertone) {
-    if (skinTone == 'Fair') return 'Light Neutrals';
-    if (skinTone == 'Medium') return 'Medium Neutrals';
-    if (skinTone == 'Deep') return 'Deep Neutrals';
-    return 'Universal';
+  // Section header
+  Widget _sectionHeader(String title) {
+    return Text(title,
+      style: const TextStyle(color: _gold, fontSize: 11,
+          fontWeight: FontWeight.w800, letterSpacing: 1.5));
   }
+
+  // Product row — card style
+  Widget _productRow(String label, String value) {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 8),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+      decoration: BoxDecoration(
+        color: _surface, borderRadius: BorderRadius.circular(10)),
+      child: Row(children: [
+        SizedBox(width: 90,
+          child: Text(label,
+            style: const TextStyle(color: _muted, fontSize: 13))),
+        Expanded(
+          child: Text(value, textAlign: TextAlign.right,
+            style: const TextStyle(color: Colors.white, fontSize: 13))),
+      ]),
+    );
+  }
+
+  // Care tip row — lightbulb icon
+  Widget _careTipRow(String tip) {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 8),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+      decoration: BoxDecoration(
+        color: _surface, borderRadius: BorderRadius.circular(10)),
+      child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        const Icon(Icons.lightbulb_outline, color: _gold, size: 18),
+        const SizedBox(width: 10),
+        Expanded(child: Text(tip,
+          style: const TextStyle(color: Colors.white, fontSize: 13, height: 1.4))),
+      ]),
+    );
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // Tips collapsible
+  Widget _tips() {
+    const tips = [
+      'Face the camera straight-on without sunglasses.',
+      'Use natural daylight for the most accurate skin tone detection.',
+      'Remove heavy makeup before skin analysis for best results.',
+      'Ensure hair is visible from root for accurate hair type detection.',
+    ];
+    return GestureDetector(
+      onTap: () => setState(() => _tipsExpanded = !_tipsExpanded),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+        decoration: BoxDecoration(
+          color: const Color(0xFF200A0A),
+          borderRadius: BorderRadius.circular(10)),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Row(children: [
+            const Icon(Icons.tips_and_updates_outlined, color: _red, size: 15),
+            const SizedBox(width: 6),
+            const Text('TIPS FOR BEST RESULTS',
+              style: TextStyle(color: _red, fontSize: 11,
+                  fontWeight: FontWeight.w800, letterSpacing: 0.8)),
+            const Spacer(),
+            Icon(_tipsExpanded
+                ? Icons.keyboard_arrow_up_rounded
+                : Icons.keyboard_arrow_down_rounded,
+              color: _red, size: 18),
+          ]),
+          if (_tipsExpanded) ...[
+            const SizedBox(height: 8),
+            ...tips.map((t) => Padding(
+              padding: const EdgeInsets.only(bottom: 5),
+              child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                const Text('• ', style: TextStyle(color: _muted)),
+                Expanded(child: Text(t,
+                  style: const TextStyle(color: Colors.white70, fontSize: 12, height: 1.5))),
+              ]),
+            )),
+          ],
+        ]),
+      ),
+    );
+  }
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Tab pill
+// ═════════════════════════════════════════════════════════════════════════════
+class _TabPill extends StatelessWidget {
+  final String label;
+  final IconData icon;
+  final bool active;
+  final VoidCallback onTap;
+  const _TabPill({required this.label, required this.icon,
+      required this.active, required this.onTap});
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: Color(0xFFF8F4F0),
-      appBar: AppBar(
-        backgroundColor: Colors.transparent,
-        elevation: 0,
-        title: Row(
-          children: [
-            AnimatedBuilder(
-              animation: _pulseAnimation,
-              builder: (context, child) {
-                return Transform.scale(
-                  scale: _pulseAnimation.value,
-                  child: Container(
-                    width: 40,
-                    height: 40,
-                    decoration: BoxDecoration(
-                      shape: BoxShape.circle,
-                      gradient: LinearGradient(
-                        colors: [Color(0xFFE91E63), Color(0xFF9C27B0)],
-                      ),
-                    ),
-                    child: Icon(Icons.auto_awesome, color: Colors.white, size: 20),
-                  ),
-                );
-              },
-            ),
-            SizedBox(width: 12),
-            Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  'AI Beauty Analysis',
-                  style: TextStyle(
-                    fontSize: 18,
-                    fontWeight: FontWeight.bold,
-                    color: Color(0xFF2C1810),
-                  ),
-                ),
-                Text(
-                  'Trained AI models for skin analysis',
-                  style: TextStyle(
-                    fontSize: 12,
-                    color: Color(0xFF8B7355),
-                  ),
-                ),
-              ],
-            ),
-          ],
-        ),
-      ),
-      body: SingleChildScrollView(
-        padding: EdgeInsets.all(16),
-        child: Column(
-          children: [
-            // Image Analysis Section
-            Container(
-              width: double.infinity,
-              height: 300,
-              decoration: BoxDecoration(
-                color: Colors.white,
-                borderRadius: BorderRadius.circular(20),
-                boxShadow: [
-                  BoxShadow(
-                    color: Colors.black.withOpacity(0.1),
-                    blurRadius: 10,
-                    offset: Offset(0, 2),
-                  ),
-                ],
-              ),
-              child: _selectedImage == null
-                  ? _buildImagePlaceholder()
-                  : _buildImageAnalysis(),
-            ),
-            
-            SizedBox(height: 20),
-            
-            // Analysis Results
-            if (_analysis != null) _buildAnalysisResults(),
-            
-            SizedBox(height: 20),
-            
-            // Action Buttons
-            Row(
-              children: [
-                Expanded(
-                  child: _buildActionButton(
-                    icon: Icons.camera_alt,
-                    label: 'Take Photo',
-                    onTap: _takePhoto,
-                    color: Color(0xFFE91E63),
-                  ),
-                ),
-                SizedBox(width: 12),
-                Expanded(
-                  child: _buildActionButton(
-                    icon: Icons.photo_library,
-                    label: 'Upload Photo',
-                    onTap: _pickImage,
-                    color: Color(0xFF9C27B0),
-                  ),
-                ),
-              ],
-            ),
-          ],
+    return Expanded(
+      child: GestureDetector(
+        onTap: onTap,
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 200),
+          height: 48,
+          decoration: BoxDecoration(
+            color: active ? _red : _tabDark,
+            borderRadius: BorderRadius.circular(10),
+            border: active ? null : Border.all(color: Colors.white12)),
+          child: Row(mainAxisAlignment: MainAxisAlignment.center, children: [
+            Icon(icon, size: 17,
+                color: active ? Colors.white : const Color(0xFF9E7070)),
+            const SizedBox(width: 7),
+            Text(label, style: TextStyle(
+              color: active ? Colors.white : const Color(0xFF9E7070),
+              fontSize: 14, fontWeight: FontWeight.w800, letterSpacing: 0.5)),
+          ]),
         ),
       ),
     );
-  }
-
-  Widget _buildImagePlaceholder() {
-    return Column(
-      mainAxisAlignment: MainAxisAlignment.center,
-      children: [
-        Icon(
-          Icons.face_retouching_natural,
-          size: 80,
-          color: Color(0xFFE91E63).withOpacity(0.3),
-        ),
-        SizedBox(height: 16),
-        Text(
-          'Upload or take a photo for AI analysis',
-          style: TextStyle(
-            fontSize: 16,
-            color: Color(0xFF8B7355),
-          ),
-        ),
-        SizedBox(height: 8),
-        Text(
-          'Our trained AI will analyze your skin tone and suggest perfect makeup products',
-          textAlign: TextAlign.center,
-          style: TextStyle(
-            fontSize: 14,
-            color: Color(0xFF8B7355).withOpacity(0.7),
-          ),
-        ),
-      ],
-    );
-  }
-
-  Widget _buildImageAnalysis() {
-    return Stack(
-      children: [
-        ClipRRect(
-          borderRadius: BorderRadius.circular(20),
-          child: Image.file(
-            _selectedImage!,
-            width: double.infinity,
-            height: double.infinity,
-            fit: BoxFit.cover,
-          ),
-        ),
-        if (_isAnalyzing) _buildAnalysisOverlay(),
-      ],
-    );
-  }
-
-  Widget _buildAnalysisOverlay() {
-    return Container(
-      decoration: BoxDecoration(
-        color: Colors.black.withOpacity(0.7),
-        borderRadius: BorderRadius.circular(20),
-      ),
-      child: Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            AnimatedBuilder(
-              animation: _scanAnimation,
-              builder: (context, child) {
-                return Container(
-                  width: 100,
-                  height: 100,
-                  decoration: BoxDecoration(
-                    shape: BoxShape.circle,
-                    border: Border.all(
-                      color: Color(0xFFE91E63),
-                      width: 3,
-                    ),
-                  ),
-                  child: Stack(
-                    children: [
-                      Positioned(
-                        top: _scanAnimation.value * 100 - 2,
-                        left: 0,
-                        right: 0,
-                        child: Container(
-                          height: 4,
-                          decoration: BoxDecoration(
-                            color: Color(0xFFE91E63),
-                            borderRadius: BorderRadius.circular(2),
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                );
-              },
-            ),
-            SizedBox(height: 20),
-            Text(
-              'AI Analyzing...',
-              style: TextStyle(
-                color: Colors.white,
-                fontSize: 18,
-                fontWeight: FontWeight.bold,
-              ),
-            ),
-            SizedBox(height: 8),
-            Text(
-              'Detecting skin tone and undertones',
-              style: TextStyle(
-                color: Colors.white70,
-                fontSize: 14,
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _buildAnalysisResults() {
-    return Container(
-      width: double.infinity,
-      padding: EdgeInsets.all(20),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(20),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withOpacity(0.1),
-            blurRadius: 10,
-            offset: Offset(0, 2),
-          ),
-        ],
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Icon(Icons.analytics, color: Color(0xFFE91E63), size: 24),
-              SizedBox(width: 12),
-              Text(
-                'AI Analysis Results',
-                style: TextStyle(
-                  fontSize: 20,
-                  fontWeight: FontWeight.bold,
-                  color: Color(0xFF2C1810),
-                ),
-              ),
-            ],
-          ),
-          SizedBox(height: 20),
-          
-          // Skin Tone Analysis
-          _buildAnalysisCard(
-            'Skin Tone',
-            _analysis!.skinTone,
-            _analysis!.confidence,
-            Icons.palette,
-          ),
-          _buildAnalysisCard(
-            'Undertone',
-            _analysis!.undertone,
-            _analysis!.confidence,
-            Icons.color_lens,
-          ),
-          
-          SizedBox(height: 20),
-          
-          // Makeup Recommendations
-          Text(
-            'Recommended Products',
-            style: TextStyle(
-              fontSize: 18,
-              fontWeight: FontWeight.bold,
-              color: Color(0xFF2C1810),
-            ),
-          ),
-          SizedBox(height: 12),
-          
-          ..._analysis!.recommendations.map((rec) => _buildRecommendationCard(rec)),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildAnalysisCard(String title, String value, double confidence, IconData icon) {
-    return Container(
-      margin: EdgeInsets.only(bottom: 12),
-      padding: EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: Color(0xFFF8F4F0),
-        borderRadius: BorderRadius.circular(12),
-      ),
-      child: Row(
-        children: [
-          Container(
-            width: 40,
-            height: 40,
-            decoration: BoxDecoration(
-              color: Color(0xFFE91E63).withOpacity(0.1),
-              borderRadius: BorderRadius.circular(8),
-            ),
-            child: Icon(icon, color: Color(0xFFE91E63), size: 20),
-          ),
-          SizedBox(width: 16),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  title,
-                  style: TextStyle(
-                    fontSize: 14,
-                    color: Color(0xFF8B7355),
-                  ),
-                ),
-                Text(
-                  value,
-                  style: TextStyle(
-                    fontSize: 16,
-                    fontWeight: FontWeight.bold,
-                    color: Color(0xFF2C1810),
-                  ),
-                ),
-              ],
-            ),
-          ),
-          Container(
-            padding: EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-            decoration: BoxDecoration(
-              color: Color(0xFFE91E63).withOpacity(0.1),
-              borderRadius: BorderRadius.circular(12),
-            ),
-            child: Text(
-              '${(confidence * 100).toInt()}%',
-              style: TextStyle(
-                fontSize: 12,
-                fontWeight: FontWeight.bold,
-                color: Color(0xFFE91E63),
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildRecommendationCard(MakeupRecommendation rec) {
-    return Container(
-      margin: EdgeInsets.only(bottom: 12),
-      padding: EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: Color(0xFFE91E63).withOpacity(0.2)),
-      ),
-      child: Row(
-        children: [
-          Container(
-            width: 50,
-            height: 50,
-            decoration: BoxDecoration(
-              color: _getCategoryColor(rec.category).withOpacity(0.1),
-              borderRadius: BorderRadius.circular(8),
-            ),
-            child: Icon(
-              _getCategoryIcon(rec.category),
-              color: _getCategoryColor(rec.category),
-              size: 24,
-            ),
-          ),
-          SizedBox(width: 16),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  rec.category,
-                  style: TextStyle(
-                    fontSize: 14,
-                    color: Color(0xFF8B7355),
-                  ),
-                ),
-                Text(
-                  rec.product,
-                  style: TextStyle(
-                    fontSize: 16,
-                    fontWeight: FontWeight.bold,
-                    color: Color(0xFF2C1810),
-                  ),
-                ),
-                Text(
-                  '${rec.brand} • ${rec.color}',
-                  style: TextStyle(
-                    fontSize: 14,
-                    color: Color(0xFF8B7355),
-                  ),
-                ),
-              ],
-            ),
-          ),
-          Column(
-            crossAxisAlignment: CrossAxisAlignment.end,
-            children: [
-              Text(
-                rec.price,
-                style: TextStyle(
-                  fontSize: 16,
-                  fontWeight: FontWeight.bold,
-                  color: Color(0xFFE91E63),
-                ),
-              ),
-              Text(
-                '${(rec.confidence * 100).toInt()}% match',
-                style: TextStyle(
-                  fontSize: 12,
-                  color: Color(0xFF8B7355),
-                ),
-              ),
-            ],
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildActionButton({
-    required IconData icon,
-    required String label,
-    required VoidCallback onTap,
-    required Color color,
-  }) {
-    return GestureDetector(
-      onTap: onTap,
-      child: Container(
-        height: 60,
-        decoration: BoxDecoration(
-          gradient: LinearGradient(
-            colors: [color, color.withOpacity(0.8)],
-          ),
-          borderRadius: BorderRadius.circular(15),
-          boxShadow: [
-            BoxShadow(
-              color: color.withOpacity(0.3),
-              blurRadius: 8,
-              offset: Offset(0, 4),
-            ),
-          ],
-        ),
-        child: Row(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Icon(icon, color: Colors.white, size: 24),
-            SizedBox(width: 8),
-            Text(
-              label,
-              style: TextStyle(
-                color: Colors.white,
-                fontSize: 16,
-                fontWeight: FontWeight.bold,
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Color _getCategoryColor(String category) {
-    switch (category) {
-      case 'Foundation': return Color(0xFFE91E63);
-      case 'Blush': return Color(0xFF9C27B0);
-      case 'Lipstick': return Color(0xFFF44336);
-      case 'Eyeshadow': return Color(0xFF673AB7);
-      default: return Color(0xFFE91E63);
-    }
-  }
-
-  IconData _getCategoryIcon(String category) {
-    switch (category) {
-      case 'Foundation': return Icons.face;
-      case 'Blush': return Icons.brush;
-      case 'Lipstick': return Icons.face;
-      case 'Eyeshadow': return Icons.visibility;
-      default: return Icons.auto_awesome;
-    }
   }
 }
 
+// ═════════════════════════════════════════════════════════════════════════════
+// Pill button
+// ═════════════════════════════════════════════════════════════════════════════
+class _PillBtn extends StatelessWidget {
+  final String label;
+  final IconData icon;
+  final Color color;
+  final VoidCallback onTap;
+  final Border? border;
+  const _PillBtn({required this.label, required this.icon,
+      required this.color, required this.onTap, this.border});
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        height: 52,
+        decoration: BoxDecoration(
+          color: color,
+          borderRadius: BorderRadius.circular(12),
+          border: border),
+        child: Row(mainAxisAlignment: MainAxisAlignment.center, children: [
+          Icon(icon, color: Colors.white, size: 18),
+          const SizedBox(width: 7),
+          Text(label, style: const TextStyle(
+            color: Colors.white, fontSize: 13,
+            fontWeight: FontWeight.w800, letterSpacing: 0.3)),
+        ]),
+      ),
+    );
+  }
+}
+
+// ── Stub classes to avoid breaking other imports ──────────────────────────────
 class SkinToneAnalysis {
-  final String skinTone;
-  final String undertone;
+  final String skinTone, undertone, hairType, hairColor;
   final double confidence;
   final List<MakeupRecommendation> recommendations;
-
   SkinToneAnalysis({
-    required this.skinTone,
-    required this.undertone,
-    required this.confidence,
-    required this.recommendations,
+    required this.skinTone, required this.undertone,
+    required this.hairType, required this.hairColor,
+    required this.confidence, required this.recommendations,
   });
 }
 
 class MakeupRecommendation {
-  final String category;
-  final String product;
-  final String color;
-  final String brand;
-  final String price;
+  final String category, product, color, brand, price;
   final double confidence;
-
   MakeupRecommendation({
-    required this.category,
-    required this.product,
-    required this.color,
-    required this.brand,
-    required this.price,
-    required this.confidence,
+    required this.category, required this.product,
+    required this.color, required this.brand,
+    required this.price, required this.confidence,
   });
 }

@@ -8,7 +8,14 @@ import 'package:flutter/material.dart';
 
 import '../models/product.dart';
 import '../services/firestore_service.dart';
+import 'ai_beauty_assistant_screen.dart';
+import 'enhanced_ai_assistant_screen.dart';
 import 'product_detail_page.dart';
+import 'live_tryon_screen.dart';
+import 'virtual_tryon_popup.dart';
+import 'hair_color_tryon_screen.dart';
+import 'hair_style_matcher_screen.dart';
+import 'mens_shade_matcher_screen.dart';
 
 /// Colors / helpers
 const _roseTop = Color(0xFFF5F5F5);
@@ -98,11 +105,25 @@ class DashboardPage extends StatefulWidget {
 class _DashboardPageState extends State<DashboardPage> {
   int _tab = 0;
 
+  void _onNavTap(int i) {
+    if (i == 1) {
+      // "Try Live" → open the landing page as a full-screen route
+      Navigator.of(context).push(
+        MaterialPageRoute(
+          fullscreenDialog: true,
+          builder: (_) => const VirtualTryOnLandingPage(),
+        ),
+      );
+      return;
+    }
+    setState(() => _tab = i);
+  }
+
   @override
   Widget build(BuildContext context) {
     final pages = <Widget>[
       const _HomeFeed(),
-      const _SimplePage(title: 'Try Live'),
+      const _SimplePage(title: 'Home'), // index 1 is never shown (Try Live = push nav)
       const _SimplePage(title: 'Cart'),
       const _SimplePage(title: 'Settings'),
       const _SimplePage(title: 'Profile'),
@@ -110,10 +131,9 @@ class _DashboardPageState extends State<DashboardPage> {
     return Scaffold(
       backgroundColor: Colors.white,
       body: Stack(children: [pages[_tab], const _AiAssistantFab()]),
-      // Make the bar hug the bottom (no SafeArea padding at bottom)
       bottomNavigationBar: _FlatBottomNav(
         currentIndex: _tab,
-        onTap: (i) => setState(() => _tab = i),
+        onTap: _onNavTap,
       ),
     );
   }
@@ -127,12 +147,176 @@ class _HomeFeed extends StatefulWidget {
 }
 
 class _HomeFeedState extends State<_HomeFeed> {
-  // MUST match Firestore values
-  static const _categories = ['All', 'Lip Sticks', 'Makeup', 'Hair Colors'];
+  // MUST match Firestore category values
+  static const _categories = ['All', 'Lip Sticks', 'Makeup', 'Hair'];
+  static const _makeupGroups = ['All Makeup', 'Eye Products', 'Face Products'];
+  static const _eyeSubcategories = [
+    'All Eye Products',
+    'Mascara',
+    'Eyeliner',
+    'Eyeshadow',
+    'Eyebrow',
+  ];
+  // Subcategories for the dedicated 'Face' tab — must match Firestore subCategory values.
+  static const _faceSubcats = [
+    'All',
+    'Foundation',
+    'Powder',
+    'Blush',
+    'Concealer',
+    'Highlighter',
+    'Contour & Bronzer',
+  ];
+  // Legacy subcategories used inside the Makeup > Face Products dropdown.
+  static const _faceSubcategories = [
+    'All Face Products',
+    'Foundation',
+    'Blush',
+    'Concealer',
+    'Powder',
+    'Bronzer',
+    'Highlighter',
+  ];
+
   String _category = _categories.first;
+  String _makeupGroup = _makeupGroups.first;
+  String _makeupSubcategory = 'All Makeup';
+  // Active subcategory when the 'Face' top-level tab is selected.
+  String _faceSubcat = _faceSubcats.first;
+  // Firestore category value to query (Hair tab queries 'Hair Colors').
+  String get _firestoreCategory =>
+      _category == 'Hair' ? 'Hair Colors' : _category;
 
   Stream<List<Product>> _stream() =>
-      FirestoreDb.instance.productsByCategory(_category);
+      FirestoreDb.instance.productsByCategory(_firestoreCategory);
+
+  bool _containsAny(String text, List<String> keys) =>
+      keys.any(text.contains);
+
+  bool _isEyeProduct(Product p) {
+    final s =
+        '${p.id} ${p.name} ${p.category} ${p.imagePath} ${p.description}'
+            .toLowerCase();
+    return _containsAny(s, [
+      'mas_',
+      'es_',
+      'el_',
+      'eb_',
+      '/eye products/',
+      '/mascara/',
+      '/eyeshadow',
+      '/eyeshadows/',
+      '/eyeliner/',
+      '/eyebrow/',
+      'mascara',
+      'eyeliner',
+      'eyeshadow',
+      'eye shadow',
+      'eyebrow',
+      'brow',
+      'kajal',
+      'kohl',
+      'lash',
+    ]);
+  }
+
+  bool _isFaceProduct(Product p) {
+    if (p.category == 'Face') return true;
+    final s =
+        '${p.id} ${p.name} ${p.category} ${p.imagePath} ${p.description}'
+            .toLowerCase();
+    return _containsAny(s, [
+      '/face products/',
+      'foundation',
+      'blush',
+      'concealer',
+      'compact',
+      'powder',
+      'bronzer',
+      'highlighter',
+      'primer',
+      'face ',
+      ' face',
+    ]);
+  }
+
+  bool _matchesEyeSub(Product p, String sub) {
+    final s = '${p.id} ${p.name} ${p.imagePath} ${p.description}'.toLowerCase();
+    switch (sub) {
+      case 'Mascara':
+        return _containsAny(s, ['mas_', '/mascara/', 'mascara', 'lash']);
+      case 'Eyeliner':
+        return _containsAny(s, ['el_', '/eyeliner/', 'eyeliner', 'kohl', 'kajal']);
+      case 'Eyeshadow':
+        return _containsAny(s, ['es_', '/eyeshadows/', 'eyeshadow', 'eye shadow']);
+      case 'Eyebrow':
+        return _containsAny(s, ['eb_', '/eyebrow/', 'eyebrow', 'brow']);
+      default:
+        return true;
+    }
+  }
+
+  bool _matchesFaceSub(Product p, String sub) {
+    // Prefer exact Firestore subCategory field match first.
+    final storedSub = (p.compareData['subCategory'] as String? ?? '').trim();
+    if (storedSub.isNotEmpty) {
+      if (sub == 'Bronzer') return storedSub == 'Contour & Bronzer';
+      return storedSub.toLowerCase() == sub.toLowerCase();
+    }
+    // Fallback: text heuristic (for legacy Makeup-category face products).
+    final s = '${p.id} ${p.name} ${p.imagePath} ${p.description}'.toLowerCase();
+    switch (sub) {
+      case 'Foundation':
+        return _containsAny(s, ['foundation', 'face base']);
+      case 'Blush':
+        return _containsAny(s, ['blush', 'rouge']);
+      case 'Concealer':
+        return _containsAny(s, ['concealer']);
+      case 'Powder':
+        return _containsAny(s, ['powder', 'compact']);
+      case 'Bronzer':
+        return _containsAny(s, ['bronzer', 'contour', 'sculpt']);
+      case 'Highlighter':
+        return _containsAny(s, ['highlighter', 'illuminator', 'glow']);
+      default:
+        return true;
+    }
+  }
+
+  /// Filter for the dedicated 'Face' top-level tab subcategory chips.
+  bool _matchesFaceTabSub(Product p, String sub) {
+    if (sub == 'All') return true;
+    final storedSub = (p.compareData['subCategory'] as String? ?? '').trim();
+    if (storedSub.isNotEmpty) {
+      return storedSub.toLowerCase() == sub.toLowerCase();
+    }
+    return _matchesFaceSub(p, sub);
+  }
+
+  List<Product> _applySubFilter(List<Product> items) {
+    // Face top-level tab: filter by subcategory chip.
+    if (_category == 'Face') {
+      if (_faceSubcat == 'All') return items;
+      return items.where((p) => _matchesFaceTabSub(p, _faceSubcat)).toList();
+    }
+    // Makeup tab: existing dropdown sub-filter.
+    if (_category != 'Makeup') return items;
+    if (_makeupGroup == 'All Makeup') return items;
+
+    return items.where((p) {
+      if (_makeupGroup == 'Eye Products') {
+        if (!_isEyeProduct(p)) return false;
+        if (_makeupSubcategory == 'All Eye Products') return true;
+        return _matchesEyeSub(p, _makeupSubcategory);
+      }
+      if (_makeupGroup == 'Face Products') {
+        if (!_isFaceProduct(p)) return false;
+        if (_makeupSubcategory == 'All Face Products') return true;
+        return _matchesFaceSub(p, _makeupSubcategory);
+      }
+      return true;
+    }).toList();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -153,7 +337,8 @@ class _HomeFeedState extends State<_HomeFeed> {
           if (!snap.hasData) {
             return const Center(child: CircularProgressIndicator());
           }
-          final items = snap.data!;
+          final rawItems = snap.data!;
+          final items = _applySubFilter(rawItems);
           return CustomScrollView(
             slivers: [
               const SliverToBoxAdapter(child: _HeaderBar()),
@@ -162,14 +347,63 @@ class _HomeFeedState extends State<_HomeFeed> {
                 SliverToBoxAdapter(
                     child: _HeroCarousel(items: items.take(4).toList())),
               const SliverToBoxAdapter(child: SizedBox(height: 16)),
+              // ── Top-level category chips ──────────────────────────────────
               SliverToBoxAdapter(
                 child: _CenteredChips(
                   categories: _categories,
                   active: _category,
-                  onChanged: (c) => setState(() => _category = c),
+                  onChanged: (c) => setState(() {
+                    _category = c;
+                    _makeupGroup = _makeupGroups.first;
+                    _makeupSubcategory = 'All Makeup';
+                    _faceSubcat = _faceSubcats.first;
+                  }),
                 ),
               ),
               const SliverToBoxAdapter(child: SizedBox(height: 12)),
+              // ── Hair subcategory feature tiles ──────────────────────────────
+              if (_category == 'Hair')
+                SliverToBoxAdapter(
+                  child: _HairFeatureTiles(),
+                ),
+              if (_category == 'Hair')
+                const SliverToBoxAdapter(child: SizedBox(height: 8)),
+              // ── Face subcategory chips ────────────────────────────────────
+              if (_category == 'Face')
+                SliverToBoxAdapter(
+                  child: _FaceSubcatChips(
+                    subcats: _faceSubcats,
+                    active: _faceSubcat,
+                    onChanged: (s) => setState(() => _faceSubcat = s),
+                  ),
+                ),
+              if (_category == 'Face')
+                const SliverToBoxAdapter(child: SizedBox(height: 10)),
+              // ── Makeup dropdown filters ──────────────────────────────────
+              if (_category == 'Makeup')
+                SliverToBoxAdapter(
+                  child: _MakeupDropdownFilters(
+                    groupOptions: _makeupGroups,
+                    activeGroup: _makeupGroup,
+                    subOptions: _makeupGroup == 'Eye Products'
+                        ? _eyeSubcategories
+                        : (_makeupGroup == 'Face Products'
+                            ? _faceSubcategories
+                            : const ['All Makeup']),
+                    activeSub: _makeupSubcategory,
+                    onGroupChanged: (group) => setState(() {
+                      _makeupGroup = group;
+                      _makeupSubcategory = group == 'Eye Products'
+                          ? _eyeSubcategories.first
+                          : (group == 'Face Products'
+                              ? _faceSubcategories.first
+                              : 'All Makeup');
+                    }),
+                    onSubChanged: (sub) => setState(() => _makeupSubcategory = sub),
+                  ),
+                ),
+              if (_category == 'Makeup')
+                const SliverToBoxAdapter(child: SizedBox(height: 10)),
               if (items.isEmpty)
                 const SliverToBoxAdapter(
                   child: Padding(
@@ -185,6 +419,86 @@ class _HomeFeedState extends State<_HomeFeed> {
             ],
           );
         },
+      ),
+    );
+  }
+}
+
+class _MakeupDropdownFilters extends StatelessWidget {
+  final List<String> groupOptions;
+  final String activeGroup;
+  final List<String> subOptions;
+  final String activeSub;
+  final ValueChanged<String> onGroupChanged;
+  final ValueChanged<String> onSubChanged;
+
+  const _MakeupDropdownFilters({
+    required this.groupOptions,
+    required this.activeGroup,
+    required this.subOptions,
+    required this.activeSub,
+    required this.onGroupChanged,
+    required this.onSubChanged,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    InputDecoration deco(String label) => InputDecoration(
+          labelText: label,
+          labelStyle: const TextStyle(
+            color: _ink,
+            fontWeight: FontWeight.w700,
+            fontSize: 12,
+          ),
+          filled: true,
+          fillColor: const Color(0xFFFFF6F6),
+          contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+          border: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(10),
+            borderSide: const BorderSide(color: Color(0xFFE8C7C7)),
+          ),
+          enabledBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(10),
+            borderSide: const BorderSide(color: Color(0xFFE8C7C7)),
+          ),
+          focusedBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(10),
+            borderSide: const BorderSide(color: _maroon, width: 1.2),
+          ),
+        );
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16),
+      child: Row(
+        children: [
+          Expanded(
+            child: DropdownButtonFormField<String>(
+              initialValue: groupOptions.contains(activeGroup) ? activeGroup : groupOptions.first,
+              decoration: deco('Makeup Type'),
+              icon: const Icon(Icons.keyboard_arrow_down_rounded),
+              items: groupOptions
+                  .map((o) => DropdownMenuItem<String>(value: o, child: Text(o)))
+                  .toList(),
+              onChanged: (v) {
+                if (v != null) onGroupChanged(v);
+              },
+            ),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: DropdownButtonFormField<String>(
+              initialValue: subOptions.contains(activeSub) ? activeSub : subOptions.first,
+              decoration: deco('Subcategory'),
+              icon: const Icon(Icons.keyboard_arrow_down_rounded),
+              items: subOptions
+                  .map((o) => DropdownMenuItem<String>(value: o, child: Text(o)))
+                  .toList(),
+              onChanged: (v) {
+                if (v != null) onSubChanged(v);
+              },
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -338,7 +652,27 @@ class _HeroCard extends StatelessWidget {
                 ]),
                 const SizedBox(height: 8),
                 _DualPillCTA(
-                  onLeft: () {}, // TODO
+                  onLeft: () => Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (_) => LiveTryOnScreen(
+                        productId: item.id,
+                        productName: item.name,
+                        productImage: item.imagePath,
+                        productCategory: item.category,
+                        shades: item.shades,
+                      ),
+                      settings: RouteSettings(
+                        arguments: {
+                          'productId': item.id,
+                          'productName': item.name,
+                          'productImage': item.imagePath,
+                          'productCategory': item.category,
+                          'shades': item.shades,
+                        },
+                      ),
+                    ),
+                  ),
                   onRight: () => FirestoreDb.instance.addToCart(
                     FirebaseAuth.instance.currentUser!.uid,
                     item,
@@ -473,7 +807,195 @@ class _CategoryChip extends StatelessWidget {
   }
 }
 
-/// Product grid
+/// Horizontally-scrollable chip row for Face subcategories.
+class _FaceSubcatChips extends StatelessWidget {
+  final List<String> subcats;
+  final String active;
+  final ValueChanged<String> onChanged;
+
+  const _FaceSubcatChips({
+    required this.subcats,
+    required this.active,
+    required this.onChanged,
+  });
+
+  IconData _iconFor(String sub) {
+    switch (sub) {
+      case 'Foundation':    return Icons.water_drop_outlined;
+      case 'Powder':        return Icons.cloud_outlined;
+      case 'Blush':         return Icons.favorite_border_rounded;
+      case 'Concealer':     return Icons.brush_outlined;
+      case 'Highlighter':   return Icons.auto_awesome_outlined;
+      case 'Contour & Bronzer': return Icons.palette_outlined;
+      default:              return Icons.grid_view_rounded;
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      height: 42,
+      child: ListView.separated(
+        scrollDirection: Axis.horizontal,
+        padding: const EdgeInsets.symmetric(horizontal: 16),
+        itemCount: subcats.length,
+        separatorBuilder: (_, __) => const SizedBox(width: 8),
+        itemBuilder: (_, i) {
+          final label = subcats[i];
+          final isActive = active == label;
+          return GestureDetector(
+            onTap: () => onChanged(label),
+            child: AnimatedContainer(
+              duration: const Duration(milliseconds: 180),
+              curve: Curves.easeOut,
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+              decoration: BoxDecoration(
+                gradient: isActive
+                    ? const LinearGradient(
+                        colors: [Color(0xFF7C150D), Color(0xFFB84A4A)],
+                        begin: Alignment.topLeft,
+                        end: Alignment.bottomRight,
+                      )
+                    : null,
+                color: isActive ? null : const Color(0xFFFFF6F6),
+                borderRadius: BorderRadius.circular(20),
+                border: Border.all(
+                  color: isActive ? Colors.transparent : const Color(0xFFE8C7C7),
+                  width: 1.2,
+                ),
+                boxShadow: isActive
+                    ? [BoxShadow(color: _maroon.withOpacity(.22), blurRadius: 6, offset: const Offset(0, 2))]
+                    : null,
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(
+                    _iconFor(label),
+                    size: 15,
+                    color: isActive ? Colors.white : _maroon,
+                  ),
+                  const SizedBox(width: 5),
+                  Text(
+                    label,
+                    style: TextStyle(
+                      fontSize: 12.5,
+                      fontWeight: FontWeight.w700,
+                      color: isActive ? Colors.white : _ink,
+                      letterSpacing: .2,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          );
+        },
+      ),
+    );
+  }
+}
+
+
+// ─── Hair Feature Tiles ────────────────────────────────────────────────────────
+class _HairFeatureTiles extends StatelessWidget {
+  const _HairFeatureTiles();
+
+  @override
+  Widget build(BuildContext context) {
+    const tiles = [
+      _HairTileData(
+        icon: Icons.colorize_rounded,
+        emoji: '🎨',
+        title: 'Colour Match',
+        subtitle: 'Try hair colours live on camera',
+        gradient: [Color(0xFF7C150D), Color(0xFFB84A4A)],
+        screen: 'colour',
+      ),
+      _HairTileData(
+        icon: Icons.face_retouching_natural_outlined,
+        emoji: '💇',
+        title: 'Style Match',
+        subtitle: 'Find your perfect hair style with AI',
+        gradient: [Color(0xFF1A237E), Color(0xFF3949AB)],
+        screen: 'style',
+      ),
+      _HairTileData(
+        icon: Icons.man_2_outlined,
+        emoji: '🧔',
+        title: "Men's Shade",
+        subtitle: '3-question shade finder quiz',
+        gradient: [Color(0xFF1B5E20), Color(0xFF388E3C)],
+        screen: 'mens',
+      ),
+    ];
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16),
+      child: Row(children: tiles.map((t) => Expanded(child: Padding(
+        padding: EdgeInsets.only(right: t != tiles.last ? 10 : 0),
+        child: _HairTile(data: t),
+      ))).toList()),
+    );
+  }
+}
+
+class _HairTileData {
+  final IconData icon;
+  final String emoji, title, subtitle, screen;
+  final List<Color> gradient;
+  const _HairTileData({required this.icon, required this.emoji,
+      required this.title, required this.subtitle,
+      required this.gradient, required this.screen});
+}
+
+class _HairTile extends StatelessWidget {
+  final _HairTileData data;
+  const _HairTile({required this.data});
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: () {
+        switch (data.screen) {
+          case 'colour':
+            Navigator.push(context, MaterialPageRoute(
+                builder: (_) => const HairColorTryOnScreen()));
+            break;
+          case 'style':
+            Navigator.push(context, MaterialPageRoute(
+                builder: (_) => const HairStyleMatcherScreen()));
+            break;
+          case 'mens':
+            Navigator.push(context, MaterialPageRoute(
+                builder: (_) => const MensShadeMatcher()));
+            break;
+        }
+      },
+      child: Container(
+        height: 110,
+        decoration: BoxDecoration(
+          gradient: LinearGradient(
+              colors: data.gradient,
+              begin: Alignment.topLeft, end: Alignment.bottomRight),
+          borderRadius: BorderRadius.circular(14),
+          boxShadow: [BoxShadow(
+              color: data.gradient.last.withOpacity(.3),
+              blurRadius: 8, offset: const Offset(0, 3))],
+        ),
+        padding: const EdgeInsets.all(12),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Text(data.emoji, style: const TextStyle(fontSize: 24)),
+          const Spacer(),
+          Text(data.title, style: const TextStyle(
+              color: Colors.white, fontSize: 13, fontWeight: FontWeight.w800)),
+          const SizedBox(height: 2),
+          Text(data.subtitle, maxLines: 2, overflow: TextOverflow.ellipsis,
+              style: const TextStyle(color: Colors.white70, fontSize: 9, height: 1.3)),
+        ]),
+      ),
+    );
+  }
+}
+
 class _ProductGrid extends StatelessWidget {
   final List<Product> items;
   const _ProductGrid({required this.items});
@@ -690,10 +1212,40 @@ class _AiSheet extends StatelessWidget {
               height: 46, width: double.infinity,
               child: ElevatedButton.icon(
                 icon: const Icon(Icons.chat_bubble_outline_rounded),
-                label: const Text('Start a conversation'),
-                onPressed: () => Navigator.pop(context),
+                label: const Text('Chat with AI'),
+                onPressed: () {
+                  Navigator.pop(context);
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (context) => AIBeautyAssistantScreen(),
+                    ),
+                  );
+                },
                 style: ElevatedButton.styleFrom(
                   backgroundColor: _maroon, foregroundColor: Colors.white,
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                ),
+              ),
+            ),
+            const SizedBox(height: 8),
+            SizedBox(
+              height: 46, width: double.infinity,
+              child: OutlinedButton.icon(
+                icon: const Icon(Icons.face_retouching_natural_rounded),
+                label: const Text('AI Skin & Hair Analysis'),
+                onPressed: () {
+                  Navigator.pop(context);
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (context) => EnhancedAIAssistantScreen(),
+                    ),
+                  );
+                },
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: _maroon,
+                  side: const BorderSide(color: _maroon),
                   shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                 ),
               ),

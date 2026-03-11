@@ -1,27 +1,68 @@
 import 'package:camera/camera.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import '../native_lip_renderer.dart';
 
+import '../models/product.dart';
 import '../widgets/live_tryon_widgets.dart';
+import '../services/firestore_service.dart';
 import '../services/simple_lip_detector.dart';
 import '../widgets/realistic_lipstick_painter.dart';
 
 class LiveTryOnScreen extends StatefulWidget {
+  final String? productId;
   final String? productName;
   final String? productImage;
+  final String? productCategory; // Explicit category from DB
   final Color? productColor;
   final String? shadeName;
   final List<Map<String, String>>? shades;
 
   const LiveTryOnScreen({
     super.key,
+    this.productId,
     this.productName,
     this.productImage,
+    this.productCategory,
     this.productColor,
     this.shadeName,
     this.shades,
   });
+
+  // Helper static method for navigation
+  static Route route({
+    String? productId,
+    String? productName,
+    String? productImage,
+    String? productCategory,
+    Color? productColor,
+    String? shadeName,
+    List<Map<String, String>>? shades,
+  }) {
+    return MaterialPageRoute(
+      builder: (_) => LiveTryOnScreen(
+        productId: productId,
+        productName: productName,
+        productImage: productImage,
+        productCategory: productCategory,
+        productColor: productColor,
+        shadeName: shadeName,
+        shades: shades,
+      ),
+      settings: RouteSettings(
+        arguments: {
+          'productId': productId,
+          'productName': productName,
+          'productImage': productImage,
+          'productCategory': productCategory,
+          'productColor': productColor,
+          'shadeName': shadeName,
+          'shades': shades,
+        },
+      ),
+    );
+  }
 
   @override
   State<LiveTryOnScreen> createState() => _LiveTryOnScreenState();
@@ -53,6 +94,13 @@ class _LiveTryOnScreenState extends State<LiveTryOnScreen> {
   String? _nativeError;
   bool _nativeDebug = false;
   bool _showLandmarks = true; // Debug mode to see lip points
+  bool _isCompareMode = false;
+  double _splitPosition = 0.5; // Added
+  List<Map<String, String>> _remoteShades = const [];
+  bool _didLoadRouteShades = false;
+  bool _didLoadProduct = false;
+  Product? _activeProduct;
+  bool _addingToCart = false;
 
   bool get _shouldUseNativeRenderer =>
       _useNativeLipRenderer &&
@@ -62,6 +110,7 @@ class _LiveTryOnScreenState extends State<LiveTryOnScreen> {
   @override
   void initState() {
     super.initState();
+    _loadShadesFromFirestore();
     // Debug: Show which renderer is being used
     debugPrint('🎯 Native Renderer Enabled: $_shouldUseNativeRenderer');
     debugPrint('🎯 Platform: $defaultTargetPlatform');
@@ -73,6 +122,73 @@ class _LiveTryOnScreenState extends State<LiveTryOnScreen> {
       debugPrint('⚠️ Using FLUTTER renderer (fallback)');
       _initializeCamera();
     }
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _alignSelectedShadeIndexToProvidedColor();
+    if (_didLoadRouteShades) return;
+    _didLoadRouteShades = true;
+    final args = _routeArgs;
+    _loadShadesFromFirestore(
+      productId: (args?['productId'] ?? '').toString(),
+      productName: (args?['productName'] ?? '').toString(),
+      imagePath: (args?['productImage'] ?? '').toString(),
+    );
+    if (!_didLoadProduct) {
+      _didLoadProduct = true;
+      _loadActiveProduct(
+        productId: (args?['productId'] ?? '').toString(),
+      );
+    }
+  }
+
+  Map<String, dynamic>? get _routeArgs {
+    final args = ModalRoute.of(context)?.settings.arguments;
+    if (args is Map) {
+      return args.map((k, v) => MapEntry(k.toString(), v));
+    }
+    return null;
+  }
+
+  Future<void> _loadShadesFromFirestore({
+    String? productId,
+    String? productName,
+    String? imagePath,
+  }) async {
+    final docId = productId ?? widget.productId;
+    final name = productName ?? widget.productName;
+    final path = imagePath ?? widget.productImage;
+    if ((docId == null || docId.isEmpty) &&
+        (name == null || name.isEmpty) &&
+        (path == null || path.isEmpty)) {
+      return;
+    }
+
+    final shades = await FirestoreDb.instance.getProductShades(
+      productId: docId,
+      productName: name,
+      imagePath: path,
+    );
+    debugPrint('🎨 Firestore shades fetched: ${shades.length} for ${name ?? docId ?? "product"}');
+    if (!mounted || shades.isEmpty) return;
+    setState(() {
+      _remoteShades = shades;
+      _alignSelectedShadeIndexToProvidedColor();
+    });
+  }
+
+  Future<void> _loadActiveProduct({String? productId}) async {
+    final id = (productId ?? widget.productId ?? '').trim();
+    if (id.isEmpty) return;
+    final product = await FirestoreDb.instance.getProduct(id);
+    if (!mounted || product == null) return;
+    setState(() {
+      _activeProduct = product;
+    });
+    // Re-apply once product subCategory is available (blush/highlighter/concealer).
+    _applyNativeEffect();
   }
 
   Future<void> _initializeCamera() async {
@@ -141,16 +257,115 @@ class _LiveTryOnScreenState extends State<LiveTryOnScreen> {
       return;
     }
     
-    debugPrint('🎨 APPLYING NATIVE EFFECT:');
-    debugPrint('   Color: $_currentShade');
-    debugPrint('   Intensity: $_intensity');
+    // Fallback to ModalRoute arguments if widget params are null
+    final args = _routeArgs;
+    final pId = ((widget.productId ?? args?['productId']) ?? '').toString();
+    final pName =
+        ((widget.productName ?? args?['productName']) ?? '').toString();
+    final pPath =
+        ((widget.productImage ?? args?['productImage']) ?? '').toString();
+    final pCat =
+        ((widget.productCategory ?? args?['productCategory']) ?? '').toString();
     
+    debugPrint('🎨 APPLYING NATIVE EFFECT:');
+    debugPrint('   Product ID: $pId');
+    debugPrint('   Product Name: $pName');
+    debugPrint('   Category: $pCat');
+    debugPrint('   Image Path: $pPath');
+
+    final arCommand = _resolveArCommand(
+      productId: pId,
+      productName: pName,
+      productCategory: pCat,
+      productImage: pPath,
+    );
+    
+    debugPrint('🎨 Resolved AR Command: $arCommand');
+
     controller.setEffect(
       shade: _currentShade,
       intensity: _intensity,
+      category: arCommand,
+      isCompareMode: _isCompareMode,
     );
     
     debugPrint('✅ Native setEffect() called successfully');
+  }
+
+  String _resolveArCommand({
+    required String productId,
+    required String productName,
+    required String productCategory,
+    required String productImage,
+  }) {
+    final id = productId.toLowerCase();
+    final name = productName.toLowerCase();
+    final cat = productCategory.toLowerCase();
+    final image = productImage.toLowerCase();
+    final all = '$id $cat $name $image';
+
+    bool hasAny(List<String> keys) => keys.any(all.contains);
+
+    // 1) Hair product routing
+    if (cat.contains('hair') || id.startsWith('hc_') || image.contains('/hair')) {
+      return 'cmd_haircolor';
+    }
+
+    // 2) Strongest signal: seeded IDs by prefix
+    if (id.startsWith('mas_')) return 'cmd_mascara';
+    if (id.startsWith('es_'))  return 'cmd_eyeshadow';
+    if (id.startsWith('el_'))  return 'cmd_eyeliner';
+    if (id.startsWith('eb_'))  return 'cmd_eyebrow';
+    if (id.startsWith('lip_')) return 'cmd_lipstick';
+
+    // 3) Face product routing by subCategory (from widget or route args)
+    if (id.startsWith('fp_') || cat == 'face') {
+      final args = _routeArgs;
+      final sub = (
+        _activeProduct?.subCategory ??
+        (args?['subCategory'] as String? ?? '')
+      ).toLowerCase();
+
+      if (sub == 'blush')              return 'cmd_blush';
+      if (sub == 'highlighter')        return 'cmd_highlight';
+      if (sub == 'contour & bronzer')  return 'cmd_highlight';
+      if (sub == 'concealer')          return 'cmd_concealer';
+      // foundation / powder → generic face overlay
+      return 'cmd_face';
+    }
+
+    // 4) Stable folder names in image path
+    if (image.contains('/mascara/'))    return 'cmd_mascara';
+    if (image.contains('/eyeshadows/')) return 'cmd_eyeshadow';
+    if (image.contains('/eyeliner/'))   return 'cmd_eyeliner';
+    if (image.contains('/eyebrow/'))    return 'cmd_eyebrow';
+    if (image.contains('/lipsticks/'))  return 'cmd_lipstick';
+    if (image.contains('/face products/')) {
+      if (image.contains('/blush/'))            return 'cmd_blush';
+      if (image.contains('/highlighter/'))      return 'cmd_highlight';
+      if (image.contains('/contour_bronzer/'))  return 'cmd_highlight';
+      if (image.contains('/concealer/'))        return 'cmd_concealer';
+      return 'cmd_face';
+    }
+
+    // 5) Product keyword fallback
+    if (hasAny(['lip liner', 'lipliner', 'lip pencil'])) return 'cmd_lipliner';
+    if (hasAny(['eyebrow', 'eye brow', 'brow']))         return 'cmd_eyebrow';
+    if (hasAny(['mascara', 'masacara', 'masacra', 'lash'])) return 'cmd_mascara';
+    if (hasAny(['eyeshadow', 'eye shadow', 'shadow stick', 'liquid eye shadow', 'palette'])) {
+      return 'cmd_eyeshadow';
+    }
+    if (hasAny(['eyeliner', 'eye liner', 'kohl', 'kajal'])) return 'cmd_eyeliner';
+    if (hasAny(['lipstick', 'lip gloss', 'lip balm', 'lip colour', 'lip color'])) {
+      return 'cmd_lipstick';
+    }
+    if (hasAny(['blush', 'rouge']))                             return 'cmd_blush';
+    if (hasAny(['highlighter', 'illuminator', 'glow']))         return 'cmd_highlight';
+    if (hasAny(['bronzer', 'contour', 'sculpt']))               return 'cmd_highlight';
+    if (hasAny(['concealer']))                                   return 'cmd_concealer';
+    if (hasAny(['foundation', 'face powder', 'compact']))        return 'cmd_face';
+
+    return 'cmd_lipstick';
   }
 
   Future<void> _onImage(CameraImage image) async {
@@ -219,23 +434,294 @@ class _LiveTryOnScreenState extends State<LiveTryOnScreen> {
     super.dispose();
   }
 
+  List<Map<String, String>> get _effectiveShades {
+    if (_remoteShades.isNotEmpty) return _remoteShades;
+    final args = _routeArgs;
+    final argShades = _parseShades(args?['shades']);
+    final widgetShades = _parseShades(widget.shades);
+    if (argShades.isNotEmpty) return argShades;
+    if (widgetShades.isNotEmpty) return widgetShades;
+    return const [];
+  }
+
   Color get _currentShade {
-    if (widget.productColor != null) {
-      return widget.productColor!;
-    }
-    final shades = widget.shades;
-    if (shades != null && shades.isNotEmpty) {
+    final args = _routeArgs;
+
+    // 1) Prefer actively selected shade from shades list for live updates.
+    final shades = _effectiveShades;
+    if (shades.isNotEmpty) {
       final index = _selectedShadeIndex.clamp(0, shades.length - 1);
-      final hex = shades[index]['hex'] ?? '#D4717A';
+      final hex = _shadeHex(shades[index]) ?? '#D4717A';
       return _hexToColor(hex);
     }
+
+    // 2) Fallback to provided product color when no shade list exists.
+    if (widget.productColor != null) return widget.productColor!;
+    if (args?['productColor'] is Color) return args?['productColor'] as Color;
+
     return const Color(0xFFD4717A);
+  }
+
+  List<Map<String, String>> _parseShades(dynamic raw) {
+    if (raw is! List) return const [];
+    return raw
+        .whereType<Map>()
+        .map((m) {
+          final map = m.map((k, v) => MapEntry(k.toString(), v.toString()));
+          final hex = _shadeHex(map);
+          return {
+            'name': map['name'] ?? map['shade'] ?? 'Shade',
+            if (hex != null) 'hex': hex,
+          };
+        })
+        .where((m) => m['hex'] != null)
+        .toList();
+  }
+
+  String? _shadeHex(Map<String, String> shade) {
+    final raw = shade['hex'] ??
+        shade['colorHex'] ??
+        shade['colourHex'] ??
+        shade['color'] ??
+        shade['colour'] ??
+        shade['value'];
+    if (raw == null || raw.isEmpty) return null;
+    var s = raw.trim();
+    if (s.startsWith('0x') || s.startsWith('0X')) s = s.substring(2);
+    if (s.startsWith('#')) s = s.substring(1);
+    if (s.length == 8) s = s.substring(2);
+    if (s.length != 6 || !RegExp(r'^[0-9a-fA-F]{6}$').hasMatch(s)) return null;
+    return '#${s.toUpperCase()}';
+  }
+
+  void _alignSelectedShadeIndexToProvidedColor() {
+    final shades = _effectiveShades;
+    if (shades.isEmpty) return;
+
+    final args = _routeArgs;
+    Color? provided = widget.productColor;
+    if (provided == null && args?['productColor'] is Color) {
+      provided = args?['productColor'] as Color;
+    }
+    if (provided == null) return;
+
+    final target = '#${(provided.value & 0xFFFFFF).toRadixString(16).padLeft(6, '0').toUpperCase()}';
+    final idx = shades.indexWhere((s) => _shadeHex(s) == target);
+    if (idx >= 0) {
+      _selectedShadeIndex = idx;
+    }
   }
 
   Color _hexToColor(String hex) {
     var s = hex.replaceAll('#', '');
     if (s.length == 6) s = 'FF$s';
     return Color(int.parse(s, radix: 16));
+  }
+
+  String get _selectedShadeName {
+    final shades = _effectiveShades;
+    if (shades.isEmpty) return 'Default Shade';
+    final idx = _selectedShadeIndex.clamp(0, shades.length - 1);
+    return shades[idx]['name'] ?? 'Shade';
+  }
+
+  Future<void> _addCurrentProductToCart() async {
+    if (_addingToCart) return;
+    final product = _activeProduct;
+    final user = FirebaseAuth.instance.currentUser;
+    if (product == null) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Product not ready yet.')),
+      );
+      return;
+    }
+    if (user == null) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Please sign in to add items to cart.')),
+      );
+      return;
+    }
+    setState(() => _addingToCart = true);
+    await FirestoreDb.instance.addToCart(user.uid, product);
+    if (!mounted) return;
+    setState(() => _addingToCart = false);
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('${product.name} added to cart')),
+    );
+  }
+
+  Widget _buildCompareOverlay() {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final width = constraints.maxWidth;
+        final height = constraints.maxHeight;
+        final splitX = width * _splitPosition.clamp(0.0, 1.0);
+
+        void moveByDelta(double dx) {
+          final next = (_splitPosition + (dx / width)).clamp(0.05, 0.95);
+          setState(() => _splitPosition = next);
+          _nativeController?.setCalibration(splitPosition: _splitPosition);
+        }
+
+        return Stack(
+          children: [
+            Positioned(
+              left: splitX - 0.5,
+              top: 0,
+              bottom: 0,
+              child: Container(
+                width: 1,
+                color: Colors.white.withValues(alpha: 0.95),
+              ),
+            ),
+            Positioned(
+              left: splitX - 28,
+              top: (height * 0.55) - 28,
+              child: GestureDetector(
+                onHorizontalDragUpdate: (d) => moveByDelta(d.delta.dx),
+                child: Container(
+                  width: 56,
+                  height: 56,
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    shape: BoxShape.circle,
+                    border: Border.all(color: Colors.black12),
+                    boxShadow: const [
+                      BoxShadow(
+                        color: Colors.black26,
+                        blurRadius: 10,
+                        offset: Offset(0, 4),
+                      ),
+                    ],
+                  ),
+                  child: const Icon(Icons.compare_arrows_rounded, color: Colors.black87),
+                ),
+              ),
+            ),
+            Positioned(
+              left: 42,
+              top: 110,
+              child: _comparePill('BEFORE'),
+            ),
+            Positioned(
+              right: 42,
+              top: 110,
+              child: _comparePill('AFTER'),
+            ),
+            Positioned(
+              left: splitX - 24,
+              top: 0,
+              bottom: 0,
+              child: GestureDetector(
+                behavior: HitTestBehavior.translucent,
+                onHorizontalDragUpdate: (d) => moveByDelta(d.delta.dx),
+                child: const SizedBox(width: 48),
+              ),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  Widget _comparePill(String text) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        color: Colors.black.withValues(alpha: 0.55),
+        borderRadius: BorderRadius.circular(6),
+      ),
+      child: Text(
+        text,
+        style: const TextStyle(
+          color: Colors.white,
+          fontSize: 10,
+          fontWeight: FontWeight.w700,
+          letterSpacing: 0.5,
+        ),
+      ),
+    );
+  }
+
+  Widget _buildProductPopupCard() {
+    final name = widget.productName ?? _activeProduct?.name ?? 'Product';
+    final imagePath = widget.productImage ?? _activeProduct?.imagePath ?? '';
+    return Container(
+      margin: const EdgeInsets.symmetric(horizontal: 12),
+      padding: const EdgeInsets.fromLTRB(10, 10, 10, 10),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(16),
+        boxShadow: const [
+          BoxShadow(
+            color: Colors.black26,
+            blurRadius: 12,
+            offset: Offset(0, 4),
+          ),
+        ],
+      ),
+      child: Row(
+        children: [
+          ClipRRect(
+            borderRadius: BorderRadius.circular(8),
+            child: SizedBox(
+              width: 44,
+              height: 44,
+              child: imagePath.startsWith('assets/')
+                  ? Image.asset(
+                      imagePath,
+                      fit: BoxFit.contain,
+                      errorBuilder: (_, __, ___) =>
+                          const Icon(Icons.inventory_2_outlined, color: Colors.black45),
+                    )
+                  : const Icon(Icons.inventory_2_outlined, color: Colors.black45),
+            ),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  name,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 20 / 1.4),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  _selectedShadeName,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(color: Colors.black54, fontSize: 13),
+                ),
+              ],
+            ),
+          ),
+          IconButton(
+            onPressed: () {},
+            icon: const Icon(Icons.favorite_border_rounded),
+          ),
+          const SizedBox(width: 2),
+          SizedBox(
+            height: 34,
+            child: ElevatedButton(
+              onPressed: _addingToCart ? null : _addCurrentProductToCart,
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.black,
+                foregroundColor: Colors.white,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(10),
+                ),
+              ),
+              child: Text(_addingToCart ? 'ADDING...' : 'ADD TO CART'),
+            ),
+          ),
+        ],
+      ),
+    );
   }
 
   Widget _buildNativeBody() {
@@ -258,7 +744,7 @@ class _LiveTryOnScreenState extends State<LiveTryOnScreen> {
             child: Container(
               padding: const EdgeInsets.all(12),
               decoration: BoxDecoration(
-                color: Colors.red.withOpacity(0.8),
+                color: Colors.red.withValues(alpha: 0.8),
                 borderRadius: BorderRadius.circular(12),
               ),
               child: Text(
@@ -288,14 +774,34 @@ class _LiveTryOnScreenState extends State<LiveTryOnScreen> {
             },
           ),
         ),
+        if (_isCompareMode)
+          Positioned.fill(
+            child: _buildCompareOverlay(),
+          ),
+        Positioned(
+          left: 0,
+          right: 0,
+          bottom: 172,
+          child: _buildProductPopupCard(),
+        ),
         Positioned(
           left: 0,
           right: 0,
           bottom: 0,
           child: BottomTray(
+            isCompareMode: _isCompareMode,
+            onModeChange: (val) => setState(() {
+              _isCompareMode = val;
+              _applyNativeEffect();
+            }),
+            splitPosition: _splitPosition,
+            onSplitChange: (val) => setState(() {
+              _splitPosition = val;
+              _nativeController?.setCalibration(splitPosition: val);
+            }),
             height: 180,
             productImage: widget.productImage,
-            shades: widget.shades ?? const [],
+            shades: _effectiveShades,
             selectedIndex: _selectedShadeIndex,
             intensity: _intensity,
             onSelect: (index) {
@@ -319,6 +825,17 @@ class _LiveTryOnScreenState extends State<LiveTryOnScreen> {
       appBar: AppBar(
         title: Text(widget.productName ?? 'Live Try-On'),
         backgroundColor: const Color(0xFF8B0000),
+        centerTitle: true,
+        leading: IconButton(
+          icon: const Icon(Icons.arrow_back_ios_new_rounded),
+          onPressed: () => Navigator.of(context).maybePop(),
+        ),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.shopping_cart_outlined),
+            onPressed: () {},
+          ),
+        ],
       ),
       body: _shouldUseNativeRenderer
           ? _buildNativeBody()
@@ -412,6 +929,16 @@ class _LiveTryOnScreenState extends State<LiveTryOnScreen> {
                             },
                           ),
                         ),
+                        if (_isCompareMode)
+                          Positioned.fill(
+                            child: _buildCompareOverlay(),
+                          ),
+                        Positioned(
+                          left: 0,
+                          right: 0,
+                          bottom: 172,
+                          child: _buildProductPopupCard(),
+                        ),
 
                         // Bottom tray
                         Positioned(
@@ -419,9 +946,13 @@ class _LiveTryOnScreenState extends State<LiveTryOnScreen> {
                           right: 0,
                           bottom: 0,
                           child: BottomTray(
+                            isCompareMode: _isCompareMode,
+                            onModeChange: (val) => setState(() => _isCompareMode = val),
+                            splitPosition: _splitPosition,
+                            onSplitChange: (val) => setState(() => _splitPosition = val),
                             height: 180,
                             productImage: widget.productImage,
-                            shades: widget.shades ?? const [],
+                            shades: _effectiveShades,
                             selectedIndex: _selectedShadeIndex,
                             intensity: _intensity,
                             onSelect: (index) {

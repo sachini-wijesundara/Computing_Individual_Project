@@ -1,0 +1,503 @@
+import 'package:cached_network_image/cached_network_image.dart';
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:flutter/material.dart';
+
+import '../models/product.dart';
+import '../services/firestore_service.dart';
+import 'live_tryon_screen.dart';
+import 'hair_color_tryon_screen.dart';
+
+// ── Colour constants (same palette as dashboard) ──────────────────────────────
+const _maroon = Color(0xFF7C150D);
+const _ink    = Color(0xFF1F1F1F);
+const _muted  = Color(0xFF8A8A8A);
+
+String _rs(num n) =>
+    'Rs. ${n.toStringAsFixed(0).replaceAll(RegExp(r'(\d)(?=(\d{3})+(?!\d))'), r'$1,')}';
+
+Icon _star(double r, int i) {
+  final p = i + 1;
+  if (r >= p) return const Icon(Icons.star, size: 16, color: Colors.red);
+  if (r > p - 1) return const Icon(Icons.star_half, size: 16, color: Colors.red);
+  return const Icon(Icons.star_border, size: 16, color: Colors.red);
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+
+class ProductDetailPage extends StatefulWidget {
+  final Product product;
+  const ProductDetailPage({super.key, required this.product});
+
+  @override
+  State<ProductDetailPage> createState() => _ProductDetailPageState();
+}
+
+class _ProductDetailPageState extends State<ProductDetailPage> {
+  bool _addedToCart = false;
+  List<Map<String, String>> _detailShades = const [];
+  int _selectedShadeIndex = 0;
+
+  Product get p => widget.product;
+
+  @override
+  void initState() {
+    super.initState();
+    _detailShades = _normalizeShades(p.shades);
+    _seedSelectedShade();
+    _refreshShadesFromFirestore();
+  }
+
+  // Parse hex colour from Firestore (e.g. '#C0392B' or 'C0392B')
+  Color _hexColor(String hex) {
+    final clean = hex.replaceAll('#', '');
+    if (clean.length == 6) {
+      return Color(int.parse('FF$clean', radix: 16));
+    }
+    return _maroon;
+  }
+
+  String _normalizeHex(String raw) {
+    var s = raw.trim();
+    if (s.startsWith('0x') || s.startsWith('0X')) s = s.substring(2);
+    if (s.startsWith('#')) s = s.substring(1);
+    if (s.length == 8) s = s.substring(2); // AARRGGBB -> RRGGBB
+    if (s.length != 6 || !RegExp(r'^[0-9a-fA-F]{6}$').hasMatch(s)) {
+      return p.colorHex;
+    }
+    return '#${s.toUpperCase()}';
+  }
+
+  List<Map<String, String>> _normalizeShades(List<Map<String, String>> raw) {
+    final out = <Map<String, String>>[];
+    for (final shade in raw) {
+      final hex = shade['hex'] ??
+          shade['colorHex'] ??
+          shade['colourHex'] ??
+          shade['color'] ??
+          shade['colour'] ??
+          shade['value'];
+      if (hex == null || hex.trim().isEmpty) continue;
+      out.add({
+        'name': shade['name'] ?? shade['shade'] ?? 'Shade',
+        'hex': _normalizeHex(hex),
+      });
+    }
+    return out;
+  }
+
+  void _seedSelectedShade() {
+    if (_detailShades.isEmpty) return;
+    final current = _normalizeHex(p.colorHex);
+    final idx = _detailShades.indexWhere((s) => s['hex'] == current);
+    _selectedShadeIndex = idx >= 0 ? idx : 0;
+  }
+
+  Future<void> _refreshShadesFromFirestore() async {
+    final shades = await FirestoreDb.instance.getProductShades(
+      productId: p.id,
+      productName: p.name,
+      imagePath: p.imagePath,
+    );
+    if (!mounted || shades.isEmpty) return;
+    final normalized = _normalizeShades(shades);
+    if (normalized.isEmpty) return;
+    setState(() {
+      _detailShades = normalized;
+      _seedSelectedShade();
+    });
+  }
+
+  String get _selectedHex {
+    if (_detailShades.isEmpty) return _normalizeHex(p.colorHex);
+    final idx = _selectedShadeIndex.clamp(0, _detailShades.length - 1);
+    return _detailShades[idx]['hex'] ?? _normalizeHex(p.colorHex);
+  }
+
+  String get _selectedShadeName {
+    if (_detailShades.isEmpty) return 'Shade';
+    final idx = _selectedShadeIndex.clamp(0, _detailShades.length - 1);
+    return _detailShades[idx]['name'] ?? 'Shade';
+  }
+
+  void _addToCart() async {
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    if (uid == null) return;
+    await FirestoreDb.instance.addToCart(uid, p);
+    if (!mounted) return;
+    setState(() => _addedToCart = true);
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('${p.name} added to cart!'),
+        backgroundColor: _maroon,
+        behavior: SnackBarBehavior.floating,
+      ),
+    );
+  }
+
+  void _liveTryOn() {
+    final shades = _detailShades.isNotEmpty ? _detailShades : _normalizeShades(p.shades);
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => LiveTryOnScreen(
+          productId: p.id,
+          productName: p.name,
+          productImage: p.imagePath,
+          productCategory: p.category,
+          productColor: _hexColor(_selectedHex),
+          shadeName: _selectedShadeName,
+          shades: shades,
+        ),
+        settings: RouteSettings(
+          arguments: {
+            'productId': p.id,
+            'productName': p.name,
+            'productImage': p.imagePath,
+            'productCategory': p.category,
+            'subCategory': p.subCategory,   // <-- passed for face product routing
+            'productColor': _hexColor(_selectedHex),
+            'shadeName': _selectedShadeName,
+            'shades': shades,
+          },
+        ),
+      ),
+    );
+  }
+
+  // ── Image widget ─────────────────────────────────────────────────────────────
+
+  Widget _productImage() {
+    if (p.imagePath.isNotEmpty && p.imagePath.startsWith('assets/')) {
+      return Image.asset(
+        p.imagePath,
+        fit: BoxFit.contain,
+        errorBuilder: (_, __, ___) => _networkOrPlaceholder(),
+      );
+    }
+    return _networkOrPlaceholder();
+  }
+
+  Widget _networkOrPlaceholder() {
+    if (p.imageUrl.isNotEmpty && p.imageUrl.startsWith('http')) {
+      return CachedNetworkImage(
+        imageUrl: p.imageUrl,
+        fit: BoxFit.contain,
+        errorWidget: (_, __, ___) =>
+            const Icon(Icons.broken_image, size: 80, color: _muted),
+      );
+    }
+    return const Icon(Icons.broken_image, size: 80, color: _muted);
+  }
+
+  // ── Build ─────────────────────────────────────────────────────────────────────
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: Colors.white,
+      appBar: AppBar(
+        backgroundColor: Colors.white,
+        elevation: 0,
+        leading: IconButton(
+          icon: const Icon(Icons.arrow_back_ios_new_rounded, color: _ink),
+          onPressed: () => Navigator.pop(context),
+        ),
+        title: Text(
+          p.brand.isNotEmpty ? p.brand : 'Product',
+          style: const TextStyle(color: _ink, fontWeight: FontWeight.w700),
+        ),
+        centerTitle: true,
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.favorite_border_rounded, color: _maroon),
+            onPressed: () async {
+              final uid = FirebaseAuth.instance.currentUser?.uid;
+              if (uid != null) {
+                await FirestoreDb.instance.toggleFavourite(uid, p.id);
+              }
+            },
+          ),
+        ],
+      ),
+      body: ListView(
+        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+        children: [
+          // ── Product image ─────────────────────────────────────────────────
+          Container(
+            height: 280,
+            decoration: BoxDecoration(
+              color: const Color(0xFFF7F7F7),
+              borderRadius: BorderRadius.circular(20),
+            ),
+            padding: const EdgeInsets.all(24),
+            child: Center(child: _productImage()),
+          ),
+          const SizedBox(height: 20),
+
+          // ── Category / subCategory badge ──────────────────────────────────
+          Wrap(
+            spacing: 8,
+            children: [
+              _Badge(
+                label: p.category.toUpperCase(),
+                color: _maroon,
+              ),
+              if (p.subCategory.isNotEmpty)
+                _Badge(
+                  label: p.subCategory.toUpperCase(),
+                  color: const Color(0xFF8B4513),
+                ),
+            ],
+          ),
+          const SizedBox(height: 8),
+
+          // ── Name & brand ──────────────────────────────────────────────────
+          Text(
+            p.name,
+            style: const TextStyle(
+                fontSize: 22, fontWeight: FontWeight.w800, color: _ink),
+          ),
+          if (p.brand.isNotEmpty) ...[
+            const SizedBox(height: 4),
+            Text(p.brand,
+                style: const TextStyle(fontSize: 14, color: _muted)),
+          ],
+          const SizedBox(height: 10),
+
+          // ── Rating row ────────────────────────────────────────────────────
+          Row(
+            children: [
+              ...List.generate(5, (i) => _star(p.rating, i)),
+              const SizedBox(width: 8),
+              Text(
+                '${p.rating.toStringAsFixed(1)} (${p.reviews} reviews)',
+                style: const TextStyle(fontSize: 13, color: _ink),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+
+          // ── Price ─────────────────────────────────────────────────────────
+          Text(
+            _rs(p.price),
+            style: const TextStyle(
+                fontSize: 24, fontWeight: FontWeight.w900, color: _ink),
+          ),
+          const SizedBox(height: 16),
+
+          // ── Shade swatches ────────────────────────────────────────────────
+          if (_detailShades.isNotEmpty || p.colorHex.isNotEmpty) ...[
+            Row(
+              children: [
+                const Text('Shades',
+                    style: TextStyle(
+                        fontWeight: FontWeight.w700, color: _ink, fontSize: 14)),
+                if (_detailShades.isNotEmpty) ...[
+                  const SizedBox(width: 8),
+                  Text(
+                    '(${_detailShades.length} available)',
+                    style: const TextStyle(color: _muted, fontSize: 12),
+                  ),
+                ],
+              ],
+            ),
+            const SizedBox(height: 8),
+            if (_detailShades.isNotEmpty)
+              // Use Wrap grid for products with many shades (face products)
+              _detailShades.length > 12
+                  ? Wrap(
+                      spacing: 10,
+                      runSpacing: 10,
+                      children: List.generate(_detailShades.length, (i) {
+                        final shade = _detailShades[i];
+                        final hex = shade['hex'] ?? '#C0392B';
+                        final selected = i == _selectedShadeIndex;
+                        return GestureDetector(
+                          onTap: () => setState(() => _selectedShadeIndex = i),
+                          child: Tooltip(
+                            message: shade['name'] ?? 'Shade',
+                            child: Container(
+                              width: 36,
+                              height: 36,
+                              decoration: BoxDecoration(
+                                color: _hexColor(hex),
+                                shape: BoxShape.circle,
+                                border: Border.all(
+                                  color: selected ? _maroon : Colors.black12,
+                                  width: selected ? 2.5 : 1.2,
+                                ),
+                                boxShadow: selected
+                                    ? [BoxShadow(
+                                        color: _hexColor(hex).withValues(alpha: 0.45),
+                                        blurRadius: 8,
+                                      )]
+                                    : null,
+                              ),
+                              child: selected
+                                  ? const Icon(Icons.check, color: Colors.white, size: 14)
+                                  : null,
+                            ),
+                          ),
+                        );
+                      }),
+                    )
+                  : SizedBox(
+                      height: 52,
+                      child: ListView.builder(
+                        scrollDirection: Axis.horizontal,
+                        itemCount: _detailShades.length,
+                        itemBuilder: (context, i) {
+                          final shade = _detailShades[i];
+                          final hex = shade['hex'] ?? '#C0392B';
+                          final selected = i == _selectedShadeIndex;
+                          return GestureDetector(
+                            onTap: () => setState(() => _selectedShadeIndex = i),
+                            child: Container(
+                              margin: const EdgeInsets.only(right: 10),
+                              width: 40,
+                              height: 40,
+                              decoration: BoxDecoration(
+                                color: _hexColor(hex),
+                                shape: BoxShape.circle,
+                                border: Border.all(
+                                  color: selected ? _maroon : Colors.black12,
+                                  width: selected ? 2.5 : 1.2,
+                                ),
+                                boxShadow: selected
+                                    ? [BoxShadow(
+                                        color: _hexColor(hex).withValues(alpha: 0.45),
+                                        blurRadius: 8,
+                                      )]
+                                    : null,
+                              ),
+                              child: selected
+                                  ? const Icon(Icons.check, color: Colors.white, size: 16)
+                                  : null,
+                            ),
+                          );
+                        },
+                      ),
+                    )
+            else
+              Row(
+                children: [
+                  Container(
+                    width: 36,
+                    height: 36,
+                    decoration: BoxDecoration(
+                      color: _hexColor(_selectedHex),
+                      shape: BoxShape.circle,
+                      border: Border.all(color: Colors.black12, width: 2),
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Text(_selectedHex,
+                      style: const TextStyle(color: _muted, fontSize: 13)),
+                ],
+              ),
+            const SizedBox(height: 8),
+            Row(
+              children: [
+                Text(
+                  _selectedShadeName,
+                  style: const TextStyle(
+                    color: _ink, fontSize: 13, fontWeight: FontWeight.w600,
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Text(_selectedHex,
+                    style: const TextStyle(color: _muted, fontSize: 13)),
+              ],
+            ),
+            const SizedBox(height: 16),
+          ],
+
+          // ── Description ───────────────────────────────────────────────────
+          if (p.description.isNotEmpty) ...[
+            const Text('About this product',
+                style: TextStyle(
+                    fontWeight: FontWeight.w700, color: _ink, fontSize: 14)),
+            const SizedBox(height: 6),
+            Text(
+              p.description,
+              style: const TextStyle(color: _ink, height: 1.6, fontSize: 14),
+            ),
+            const SizedBox(height: 20),
+          ],
+
+          // ── CTA buttons ───────────────────────────────────────────────────
+          Row(
+            children: [
+              // Live try-on button
+              Expanded(
+                child: OutlinedButton.icon(
+                  onPressed: _liveTryOn,
+                  icon: const Icon(Icons.camera_alt_rounded),
+                  label: const Text('LIVE TRY ON'),
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: _maroon,
+                    side: const BorderSide(color: _maroon, width: 1.5),
+                    padding: const EdgeInsets.symmetric(vertical: 14),
+                    shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(10)),
+                    textStyle: const TextStyle(fontWeight: FontWeight.w800),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 12),
+              // Add to cart button
+              Expanded(
+                child: ElevatedButton.icon(
+                  onPressed: _addedToCart ? null : _addToCart,
+                  icon: Icon(
+                      _addedToCart ? Icons.check : Icons.shopping_cart_rounded),
+                  label: Text(_addedToCart ? 'ADDED' : 'ADD TO CART'),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: _ink,
+                    foregroundColor: Colors.white,
+                    disabledBackgroundColor: Colors.green.shade700,
+                    disabledForegroundColor: Colors.white,
+                    padding: const EdgeInsets.symmetric(vertical: 14),
+                    shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(10)),
+                    elevation: 0,
+                    textStyle: const TextStyle(fontWeight: FontWeight.w800),
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 32),
+        ],
+      ),
+    );
+  }
+}
+
+// ── Small reusable badge pill ─────────────────────────────────────────────────
+class _Badge extends StatelessWidget {
+  final String label;
+  final Color color;
+  const _Badge({required this.label, required this.color});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.09),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: color.withValues(alpha: 0.35)),
+      ),
+      child: Text(
+        label,
+        style: TextStyle(
+          color: color,
+          fontSize: 11,
+          fontWeight: FontWeight.w700,
+          letterSpacing: 1,
+        ),
+      ),
+    );
+  }
+}
