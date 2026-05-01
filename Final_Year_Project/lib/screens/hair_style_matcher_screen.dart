@@ -52,6 +52,15 @@ class _HairStyleMatcherState extends State<HairStyleMatcherScreen> {
     _analysisNote = null;
   }
 
+  Future<void> _pickImage(ImageSource source) async {
+    final f = await _picker.pickImage(source: source, imageQuality: 85);
+    if (f == null || !mounted) return;
+    setState(() {
+      _image = File(f.path);
+      _clearAnalysis();
+    });
+  }
+
   Future<void> _analyzeWithOpenRouter() async {
     if (_image == null) return;
     setState(() {
@@ -302,18 +311,7 @@ class _HairStyleMatcherState extends State<HairStyleMatcherScreen> {
           Material(
             color: Colors.transparent,
             child: InkWell(
-              onTap: () async {
-                final f = await _picker.pickImage(
-                  source: ImageSource.gallery,
-                  imageQuality: 85,
-                );
-                if (f != null) {
-                  setState(() {
-                    _image = File(f.path);
-                    _clearAnalysis();
-                  });
-                }
-              },
+              onTap: () => _pickImage(ImageSource.gallery),
               borderRadius: BorderRadius.circular(20),
               child: Ink(
                 decoration: BoxDecoration(
@@ -394,7 +392,7 @@ class _HairStyleMatcherState extends State<HairStyleMatcherScreen> {
                             ),
                             const SizedBox(height: 14),
                             Text(
-                              'Tap to choose from gallery',
+                              'Choose your photo',
                               style: TextStyle(
                                 color: _ink,
                                 fontSize: 15,
@@ -421,6 +419,42 @@ class _HairStyleMatcherState extends State<HairStyleMatcherScreen> {
             ),
           ),
           const SizedBox(height: 18),
+          Row(
+            children: [
+              Expanded(
+                child: OutlinedButton.icon(
+                  onPressed: _analyzing ? null : () => _pickImage(ImageSource.gallery),
+                  icon: const Icon(Icons.photo_library_outlined, size: 18),
+                  label: const Text('From Gallery'),
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: _primary,
+                    side: BorderSide(color: _primary.withValues(alpha: 0.35)),
+                    padding: const EdgeInsets.symmetric(vertical: 14),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(14),
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: OutlinedButton.icon(
+                  onPressed: _analyzing ? null : () => _pickImage(ImageSource.camera),
+                  icon: const Icon(Icons.camera_alt_outlined, size: 18),
+                  label: const Text('Take Selfie'),
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: _primary,
+                    side: BorderSide(color: _primary.withValues(alpha: 0.35)),
+                    padding: const EdgeInsets.symmetric(vertical: 14),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(14),
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 14),
           SizedBox(
             width: double.infinity,
             height: 54,
