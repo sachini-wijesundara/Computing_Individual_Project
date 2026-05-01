@@ -29,9 +29,14 @@ env*/
 *.dylib
 *.so
 
-# Archives for large data
+# Archives for large data (do not commit dataset backups)
 *.zip
 *.z[0-9][0-9]
+datasets_backup.zip
+datasets_backup.z[0-9][0-9]
+
+# Optional small project zip kept in repo (remove this exception if you drop the file)
+!assets_backup.zip
 
 # Ignore raw data and media
 datasets/
@@ -46,7 +51,3 @@ datasets/
 *.task
 *.dylib
 *.so
-
-# But allow archives
-!*.zip
-!*.z[0-9][0-9]
