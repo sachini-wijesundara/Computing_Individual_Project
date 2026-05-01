@@ -1,16 +1,22 @@
 // lib/services/tflite_analysis_service.dart
 //
 // Beauty analysis service.
-// PRIMARY:  Gemini Vision API — sends the image directly so results are accurate.
-// FALLBACK: Improved pixel analysis (better region sampling, HSV-aware thresholds).
+// PRIMARY:   Gemini Vision API — sends the image directly so results are accurate.
+// SECONDARY: On-device TFLite classifiers (hair_type + hair_color models).
+// TERTIARY:  Remote Python server (usually offline during development).
+// FALLBACK:  Improved pixel analysis (HSV-aware thresholds).
 
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math' as math;
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 import 'package:google_generative_ai/google_generative_ai.dart';
 import 'package:image/image.dart' as img;
+import 'package:tflite_flutter/tflite_flutter.dart';
 import 'ai_chat_service.dart';
+import '../config/app_secrets.dart';
+import '../models/hair_style.dart';
 
 // ── Result models ─────────────────────────────────────────────────────────────
 
@@ -37,6 +43,7 @@ class HairResult {
   final String inferenceMode;
   final List<String> careTips;
   final Map<String, String> productRecommendations;
+  final List<String> recommendedStyles;
 
   const HairResult({
     required this.hairType,
@@ -45,6 +52,7 @@ class HairResult {
     required this.inferenceMode,
     required this.careTips,
     required this.productRecommendations,
+    required this.recommendedStyles,
   });
 }
 
@@ -68,9 +76,6 @@ class TFLiteAnalysisService {
 
   final _aiChatService = AIChatService();
 
-  // Gemini API key (same key used in chat service)
-  static const _apiKey = 'AIzaSyDTBPPWWZWQjGgf7WZhr8hkdGon1CcmwBg';
-
   // Models to try for vision analysis
   static const _visionModels = [
     'gemini-2.5-flash',
@@ -79,38 +84,189 @@ class TFLiteAnalysisService {
     'gemini-1.0-pro-vision',
   ];
 
+  // On-device TFLite interpreters
+  Interpreter? _hairTypeInterpreter;
+  Interpreter? _hairColorInterpreter;
+  List<String> _hairTypeLabels = ['Straight', 'Wavy', 'Curly', 'Coily'];
+  List<String> _hairColorLabels = ['Black', 'Brown', 'Blonde', 'Red', 'Grey'];
+  bool _tfliteReady = false;
+
+  /// Avoid duplicate Gemini calls when [analyzeSkin] and [analyzeHair] run back-to-back on the same file.
+  String? _visionCacheKey;
+  Map<String, dynamic>? _visionCache;
+
+  Future<String> _visionCacheKeyFor(File f) async {
+    final s = await f.stat();
+    return '${f.path}:${s.size}:${s.modified.millisecondsSinceEpoch}';
+  }
+
+  static String? _extractJsonObject(String raw) {
+    var s = raw.trim();
+    final fence = RegExp(r'```(?:json)?\s*([\s\S]*?)```', multiLine: true);
+    final m = fence.firstMatch(s);
+    if (m != null) s = m.group(1)!.trim();
+
+    final start = s.indexOf('{');
+    if (start < 0) return null;
+    var depth = 0;
+    for (var i = start; i < s.length; i++) {
+      final c = s.codeUnitAt(i);
+      if (c == 0x7B) depth++;
+      if (c == 0x7D) {
+        depth--;
+        if (depth == 0) return s.substring(start, i + 1);
+      }
+    }
+    return null;
+  }
+
+  static List<String> _coerceRecommendedStyles(dynamic v) {
+    if (v == null) return [];
+    if (v is! List) return [];
+    final out = <String>[];
+    for (final e in v) {
+      final s = e == null ? '' : e.toString().trim();
+      if (s.isNotEmpty && s != 'null') out.add(s);
+    }
+    return out;
+  }
+
+  static String? _visionString(dynamic v) {
+    if (v == null) return null;
+    if (v is String) {
+      final t = v.trim();
+      return t.isEmpty ? null : t;
+    }
+    final t = v.toString().trim();
+    if (t.isEmpty || t == 'null') return null;
+    return t;
+  }
+
   Future<void> initialize() async {
-    debugPrint('✅ TFLiteAnalysisService initialized (Gemini Vision + Pixel fallback)');
+    await _loadTFLiteModels();
+    debugPrint('✅ TFLiteAnalysisService initialized (Gemini Vision + TFLite + Pixel fallback)');
+  }
+
+  Future<void> _loadTFLiteModels() async {
+    try {
+      _hairTypeInterpreter = await Interpreter.fromAsset(
+        'assets/models/hair_type_classifier.tflite',
+        options: InterpreterOptions()..threads = 2,
+      );
+      _hairColorInterpreter = await Interpreter.fromAsset(
+        'assets/models/hair_color_classifier.tflite',
+        options: InterpreterOptions()..threads = 2,
+      );
+
+      // Load label files
+      final typeLabelsJson = await rootBundle.loadString('assets/models/hair_type_classifier_labels.json');
+      final colorLabelsJson = await rootBundle.loadString('assets/models/hair_color_classifier_labels.json');
+      _hairTypeLabels  = List<String>.from(json.decode(typeLabelsJson)  as List);
+      _hairColorLabels = List<String>.from(json.decode(colorLabelsJson) as List);
+
+      _tfliteReady = true;
+      debugPrint('✅ TFLite hair classifiers loaded (type: ${_hairTypeLabels.length} classes, color: ${_hairColorLabels.length} classes)');
+    } catch (e) {
+      debugPrint('⚠️ TFLite hair classifiers not loaded (will use pixel fallback): $e');
+      _tfliteReady = false;
+    }
+  }
+
+  // ── ON-DEVICE TFLite — hair type + color classification ───────────────────
+  Future<Map<String, dynamic>?> _tfliteAnalyzeHair(File imageFile) async {
+    if (!_tfliteReady || _hairTypeInterpreter == null || _hairColorInterpreter == null) {
+      return null;
+    }
+    try {
+      final bytes   = await imageFile.readAsBytes();
+      final decoded = img.decodeImage(bytes);
+      if (decoded == null) return null;
+
+      // Resize to 224×224 (MobileNet input size)
+      final resized = img.copyResize(decoded, width: 224, height: 224);
+
+      // Build normalized float32 input [1, 224, 224, 3]
+      final input = List.generate(
+        1, (_) => List.generate(
+          224, (y) => List.generate(
+            224, (x) {
+              final p = resized.getPixel(x, y);
+              return [p.r / 255.0, p.g / 255.0, p.b / 255.0];
+            },
+          ),
+        ),
+      );
+
+      // Run hair type classifier
+      final typeOutput = [List<double>.filled(_hairTypeLabels.length, 0.0)];
+      _hairTypeInterpreter!.run(input, typeOutput);
+      final typeScores = typeOutput[0];
+      final typeIdx    = typeScores.indexOf(typeScores.reduce(math.max));
+      final hairType   = typeIdx < _hairTypeLabels.length ? _hairTypeLabels[typeIdx] : 'Wavy';
+
+      // Run hair color classifier
+      final colorOutput = [List<double>.filled(_hairColorLabels.length, 0.0)];
+      _hairColorInterpreter!.run(input, colorOutput);
+      final colorScores = colorOutput[0];
+      final colorIdx    = colorScores.indexOf(colorScores.reduce(math.max));
+      final hairColor   = colorIdx < _hairColorLabels.length ? _hairColorLabels[colorIdx] : 'Brown';
+
+      final confidence = (typeScores[typeIdx] + colorScores[colorIdx]) / 2.0;
+      debugPrint('✅ TFLite hair: type=$hairType (${typeScores[typeIdx].toStringAsFixed(2)}), color=$hairColor (${colorScores[colorIdx].toStringAsFixed(2)})');
+
+      return {
+        'hair_type':  hairType,
+        'hair_color': hairColor,
+        'confidence': confidence.clamp(0.65, 0.95),
+        'inference_mode': 'tflite_ondevice',
+      };
+    } catch (e) {
+      debugPrint('⚠️ TFLite hair inference error: $e');
+      return null;
+    }
   }
 
   // ── GEMINI VISION — calls Gemini with the actual image ────────────────────
 
   Future<Map<String, dynamic>?> _geminiVisionAnalyze(File imageFile) async {
+    if (AppSecrets.geminiApiKey.isEmpty) {
+      debugPrint('⚠️ GEMINI_API_KEY missing — skipping Gemini Vision (use .env or --dart-define)');
+      return null;
+    }
+
+    final cacheKey = await _visionCacheKeyFor(imageFile);
+    if (_visionCacheKey == cacheKey && _visionCache != null) {
+      debugPrint('♻️ Using cached Gemini Vision result for this photo');
+      return _visionCache;
+    }
+
     final imageBytes = await imageFile.readAsBytes();
     final mimeType = imageFile.path.toLowerCase().endsWith('.png')
         ? 'image/png'
         : 'image/jpeg';
 
-    const skinPrompt = '''
+    final skinPrompt = '''
 Analyze this photo and determine:
 1. Skin tone: one of [Fair, Light, Medium, Tan, Deep]
 2. Skin undertone: one of [Cool, Warm, Neutral]
 3. Hair type: one of [Straight, Wavy, Curly, Coily]
 4. Hair color: one of [Black, Brown, Blonde, Red, Auburn, Grey]
-5. Confidence: a number between 0.7 and 1.0
+5. Recommended hairstyles: Choose the top 3 best hair styles for this person from this list:
+   ${hairStyles.map((s) => s.name).join(', ')}.
+6. Confidence: a number between 0.7 and 1.0
 
-Reply ONLY in valid JSON, no markdown, no explanation:
-{"skin_tone":"Medium","undertone":"Warm","hair_type":"Wavy","hair_color":"Brown","confidence":0.88}
+Reply ONLY in valid JSON:
+{"skin_tone":"Medium","undertone":"Warm","hair_type":"Wavy","hair_color":"Brown","recommended_styles":["Beachy Waves","Curtain Bangs","Layered Lob"],"confidence":0.88}
 ''';
 
     for (final modelName in _visionModels) {
       try {
         final model = GenerativeModel(
           model: modelName,
-          apiKey: _apiKey,
+          apiKey: AppSecrets.geminiApiKey,
           generationConfig: GenerationConfig(
             temperature: 0.1,
-            maxOutputTokens: 200,
+            maxOutputTokens: 1024,
           ),
         );
         final content = [
@@ -124,16 +280,19 @@ Reply ONLY in valid JSON, no markdown, no explanation:
         final text = response.text ?? '';
         debugPrint('Gemini Vision [$modelName] raw: $text');
 
-        // Extract JSON from the response
-        final jsonMatch = RegExp(r'\{[^}]+\}').firstMatch(text);
-        if (jsonMatch != null) {
-          final parsed = json.decode(jsonMatch.group(0)!) as Map<String, dynamic>;
-          // Validate keys exist
+        final jsonStr = _extractJsonObject(text);
+        if (jsonStr == null) continue;
+        try {
+          final parsed = json.decode(jsonStr) as Map<String, dynamic>;
           if (parsed.containsKey('skin_tone') && parsed.containsKey('hair_type')) {
             debugPrint('✅ Gemini Vision analysis succeeded with $modelName');
             parsed['inference_mode'] = 'gemini_vision';
+            _visionCacheKey = cacheKey;
+            _visionCache = parsed;
             return parsed;
           }
+        } catch (e) {
+          debugPrint('Gemini Vision [$modelName] JSON parse error: $e');
         }
       } catch (e) {
         debugPrint('Gemini Vision [$modelName] error: $e');
@@ -275,8 +434,8 @@ Reply ONLY in valid JSON, no markdown, no explanation:
     // 1) Gemini Vision (most accurate — actually sees the image)
     final vision = await _geminiVisionAnalyze(imageFile);
     if (vision != null) {
-      final s = (vision['skin_tone'] as String?) ?? 'Medium';
-      final u = (vision['undertone'] as String?) ?? 'Neutral';
+      final s = _visionString(vision['skin_tone']) ?? 'Medium';
+      final u = _visionString(vision['undertone']) ?? 'Neutral';
       return SkinToneResult(
         skinTone: s, undertone: u,
         confidence: (vision['confidence'] as num?)?.toDouble() ?? 0.90,
@@ -313,21 +472,37 @@ Reply ONLY in valid JSON, no markdown, no explanation:
   }
 
   Future<HairResult> analyzeHair(File imageFile) async {
-    // 1) Gemini Vision
+    // 1) Gemini Vision (most accurate — sees the actual image)
     final vision = await _geminiVisionAnalyze(imageFile);
     if (vision != null) {
-      final t = (vision['hair_type'] as String?) ?? 'Wavy';
-      final c = (vision['hair_color'] as String?) ?? 'Brown';
+      final t = _visionString(vision['hair_type']) ?? 'Wavy';
+      final c = _visionString(vision['hair_color']) ?? 'Brown';
       return HairResult(
         hairType: t, hairColor: c,
         confidence: (vision['confidence'] as num?)?.toDouble() ?? 0.90,
         inferenceMode: 'gemini_vision',
         careTips: _hairCareTips(t),
         productRecommendations: _hairProductRecs(t, c),
+        recommendedStyles: _coerceRecommendedStyles(vision['recommended_styles']),
       );
     }
 
-    // 2) Remote server
+    // 2) On-device TFLite classifiers (offline-capable)
+    final tflite = await _tfliteAnalyzeHair(imageFile);
+    if (tflite != null) {
+      final t = (tflite['hair_type'] as String?) ?? 'Wavy';
+      final c = (tflite['hair_color'] as String?) ?? 'Brown';
+      return HairResult(
+        hairType: t, hairColor: c,
+        confidence: (tflite['confidence'] as num?)?.toDouble() ?? 0.80,
+        inferenceMode: 'tflite_ondevice',
+        careTips: _hairCareTips(t),
+        productRecommendations: _hairProductRecs(t, c),
+        recommendedStyles: [], // TFLite fallback doesn't do style matching yet
+      );
+    }
+
+    // 3) Remote server (Python API — usually offline during dev)
     try {
       final apiResult = await _aiChatService.analyzeHairRemote(imageFile);
       if (apiResult != null) {
@@ -339,11 +514,12 @@ Reply ONLY in valid JSON, no markdown, no explanation:
           inferenceMode: 'server',
           careTips: _hairCareTips(t),
           productRecommendations: _hairProductRecs(t, c),
+          recommendedStyles: [],
         );
       }
     } catch (e) { /* fall through */ }
 
-    // 3) Pixel analysis
+    // 4) Pixel analysis fallback
     final px = await _pixelAnalyzeImage(imageFile);
     final t = px['hair_type'] as String;
     final c = px['hair_color'] as String;
@@ -353,6 +529,7 @@ Reply ONLY in valid JSON, no markdown, no explanation:
       inferenceMode: 'pixel_analysis',
       careTips: _hairCareTips(t),
       productRecommendations: _hairProductRecs(t, c),
+      recommendedStyles: [],
     );
   }
 
@@ -447,5 +624,13 @@ Reply ONLY in valid JSON, no markdown, no explanation:
     };
   }
 
-  void dispose() {}
+  void dispose() {
+    _hairTypeInterpreter?.close();
+    _hairColorInterpreter?.close();
+    _hairTypeInterpreter = null;
+    _hairColorInterpreter = null;
+    _tfliteReady = false;
+    _visionCacheKey = null;
+    _visionCache = null;
+  }
 }

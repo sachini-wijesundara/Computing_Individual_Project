@@ -1,5 +1,11 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 
+/// Shade selected when adding a product to the local [CartProvider] cart.
+class ProductShade {
+  final String name;
+  const ProductShade({required this.name});
+}
+
 /// Represents a single product in the Firestore `products` collection.
 class Product {
   final String id;

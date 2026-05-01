@@ -4,13 +4,14 @@
 // Uses the user's TFLite-detected Beauty Profile as system context so every
 // answer is personalised to their actual skin tone, undertone, and hair type.
 //
-// SETUP:
-//   1. Go to https://aistudio.google.com/app/apikey (free, no credit card)
-//   2. Generate an API key
-//   3. Paste it in the _apiKey field below (or inject via env)
+// SETUP: Add GEMINI_API_KEY to `.env` (see `.env.example`) or pass
+//   --dart-define=GEMINI_API_KEY=... when running Flutter.
+//   https://aistudio.google.com/app/apikey
 
 import 'package:google_generative_ai/google_generative_ai.dart';
 import 'package:flutter/foundation.dart';
+
+import '../config/app_secrets.dart';
 
 class BeautyProfile {
   final String skinTone;
@@ -29,10 +30,7 @@ class BeautyProfile {
 }
 
 class GeminiChatService {
-  // ── 🔑 Paste your free Gemini API key here ────────────────────────────────
-  // Get one at: https://aistudio.google.com/app/apikey
-  static const String _apiKey = 'AIzaSyDTBPPWWZWQjGgf7WZhr8hkdGon1CcmwBg';
-  // ─────────────────────────────────────────────────────────────────────────
+  static String get _apiKey => AppSecrets.geminiApiKey;
 
   GenerativeModel? _model;
   ChatSession? _chat;
@@ -50,7 +48,7 @@ class GeminiChatService {
   factory GeminiChatService() => _instance;
   GeminiChatService._internal();
 
-  bool get isConfigured => _apiKey.isNotEmpty && !_apiKey.startsWith('YOUR_');
+  bool get isConfigured => _apiKey.isNotEmpty;
 
   /// Call this when the TFLite analysis finishes to personalise the chat.
   void setBeautyProfile(BeautyProfile profile) {
@@ -157,8 +155,8 @@ button to get a personalised analysis, and answer general beauty questions in th
     return "⚙️ **Almost there!** To enable the real AI chatbot:\n\n"
         "1. Go to **aistudio.google.com/app/apikey** (free)\n"
         "2. Click **Create API key**\n"
-        "3. Open `lib/services/gemini_chat_service.dart`\n"
-        "4. Paste it in the `_apiKey` field\n\n"
+        "3. Add **GEMINI_API_KEY** to your project `.env` (see `.env.example`)\n"
+        "   or run with `--dart-define=GEMINI_API_KEY=...`\n\n"
         "Until then, I can still answer beauty questions using your scanned profile 💄";
   }
 

@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'full_makeup_screen.dart';
+import 'nail_tryon_landing.dart';
 
 // ── Brand colours ──────────────────────────────────────────────────────────────
 const _maroon  = Color(0xFF7C150D);
@@ -139,6 +140,34 @@ class VirtualTryOnLandingPage extends StatelessWidget {
                             Icon(Icons.photo_library_outlined, size: 20),
                             SizedBox(width: 8),
                             Text('Upload Photo',
+                                style: TextStyle(
+                                    fontSize: 16, fontWeight: FontWeight.w700)),
+                          ],
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 14),
+
+                    // Nail try-on (hand photo or live camera)
+                    SizedBox(
+                      width: double.infinity,
+                      height: 52,
+                      child: OutlinedButton(
+                        onPressed: () => showNailTryOnEntry(context),
+                        style: OutlinedButton.styleFrom(
+                          foregroundColor: _maroon,
+                          side: BorderSide(color: _maroon.withValues(alpha: 0.85), width: 1.8),
+                          backgroundColor: Colors.white.withValues(alpha: 0.4),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(28),
+                          ),
+                        ),
+                        child: const Row(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            Icon(Icons.auto_awesome_outlined, size: 20),
+                            SizedBox(width: 8),
+                            Text('Nail try-on',
                                 style: TextStyle(
                                     fontSize: 16, fontWeight: FontWeight.w700)),
                           ],

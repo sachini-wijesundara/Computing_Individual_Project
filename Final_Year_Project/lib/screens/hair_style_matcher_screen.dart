@@ -1,71 +1,22 @@
-// lib/screens/hair_style_matcher_screen.dart
-//
-// Hair Style Matcher — browse styles, try uploaded look, AI recommendations.
-
 import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
-import 'package:google_generative_ai/google_generative_ai.dart';
-import 'dart:convert';
 
-const _bg      = Color(0xFF111111);
-const _surface = Color(0xFF1C1C1C);
-const _card    = Color(0xFF242424);
-const _red     = Color(0xFFC41E3A);
-const _gold    = Color(0xFFD4A843);
+import '../models/hair_style.dart';
+import '../services/openrouter_hair_analysis_service.dart';
 
-// ─── Hair style catalogue ─────────────────────────────────────────────────────
-class _Style {
-  final String id, name, description, bestFor, emoji;
-  final Color accent;
-  final List<String> tags;
-  const _Style({required this.id, required this.name, required this.description,
-      required this.bestFor, required this.emoji, required this.accent,
-      required this.tags});
-}
-
-const _styles = [
-  _Style(id: 'blunt_bob', name: 'Blunt Bob', emoji: '✂️',
-    description: 'Clean, straight cut at the jaw. Timeless and bold.',
-    bestFor: 'Oval, Square, Heart faces',
-    accent: Color(0xFFC41E3A), tags: ['Short', 'Classic', 'Low Maintenance']),
-  _Style(id: 'beachy_waves', name: 'Beachy Waves', emoji: '🌊',
-    description: 'Effortless textured waves for a relaxed, sun-kissed look.',
-    bestFor: 'All face shapes',
-    accent: Color(0xFF4A90D9), tags: ['Medium', 'Casual', 'Volume']),
-  _Style(id: 'curtain_bangs', name: 'Curtain Bangs', emoji: '🪶',
-    description: 'Parted fringe framing the face. Vintage chic meets modern.',
-    bestFor: 'Oval, Square faces',
-    accent: Color(0xFF9B59B6), tags: ['Bangs', 'Trendy', 'Face-Framing']),
-  _Style(id: 'layer_lob', name: 'Layered Lob', emoji: '🌿',
-    description: 'Long bob with movement-adding layers for effortless texture.',
-    bestFor: 'Round, Heart faces',
-    accent: Color(0xFF27AE60), tags: ['Medium', 'Volume', 'Natural']),
-  _Style(id: 'sleek_straight', name: 'Sleek Straight', emoji: '💎',
-    description: 'Ultra-polished, straight strands for a powerful statement.',
-    bestFor: 'Oval, Oblong faces',
-    accent: Color(0xFF2C3E50), tags: ['Polished', 'Formal', 'Low Frizz']),
-  _Style(id: 'big_curls', name: 'Big Voluminous Curls', emoji: '🌀',
-    description: 'Bouncy, defined curls with maximum volume and drama.',
-    bestFor: 'Oval, Long faces',
-    accent: Color(0xFFE67E22), tags: ['Curly', 'Volume', 'Glam']),
-  _Style(id: 'braid_crown', name: 'Braided Crown', emoji: '👑',
-    description: 'Halo braid for an ethereal, bohemian goddess look.',
-    bestFor: 'Oval, Heart, Square faces',
-    accent: Color(0xFFD4A843), tags: ['Updo', 'Bridal', 'Bohemian']),
-  _Style(id: 'wolf_cut', name: 'Wolf Cut', emoji: '🐺',
-    description: 'Shaggy layers blending 70s rocker vibes with modern texture.',
-    bestFor: 'Oval, Square faces',
-    accent: Color(0xFF6C3483), tags: ['Edgy', 'Trendy', 'Layers']),
-  _Style(id: 'slick_bun', name: 'Slick Bun', emoji: '🎀',
-    description: 'Polished high bun for a clean, editorial look.',
-    bestFor: 'All face shapes',
-    accent: Color(0xFFC0392B), tags: ['Updo', 'Sleek', 'Professional']),
-  _Style(id: 'textured_pixie', name: 'Textured Pixie', emoji: '⚡',
-    description: 'Bold short cut with tousled layers for a daring edge.',
-    bestFor: 'Oval, Heart faces',
-    accent: Color(0xFF16A085), tags: ['Short', 'Bold', 'Edgy']),
-];
+// ─── La Vogue Vista theme (matches MaterialApp + dashboard) ─────────────────
+const _roseTop = Color(0xFFF5E6E8);
+const _roseBot = Color(0xFFEDD6DA);
+const _primary = Color(0xFF8B0000);
+const _secondary = Color(0xFFB8860B);
+const _goldHighlight = Color(0xFFDCB568);
+const _ink = Color(0xFF1F1F1F);
+const _muted = Color(0xFF6B5A5E);
+const _card = Colors.white;
+const _hairIndigo = Color(0xFF3949AB);
+const _hairIndigoDeep = Color(0xFF1A237E);
 
 // ═════════════════════════════════════════════════════════════════════════════
 class HairStyleMatcherScreen extends StatefulWidget {
@@ -74,262 +25,729 @@ class HairStyleMatcherScreen extends StatefulWidget {
   State<HairStyleMatcherScreen> createState() => _HairStyleMatcherState();
 }
 
-class _HairStyleMatcherState extends State<HairStyleMatcherScreen>
-    with SingleTickerProviderStateMixin {
-  late final TabController _tabs = TabController(length: 2, vsync: this);
+class _AIStyleRec {
+  final String style;
+  final String reason;
+  const _AIStyleRec({required this.style, required this.reason});
+}
+
+class _HairStyleMatcherState extends State<HairStyleMatcherScreen> {
   final _picker = ImagePicker();
+  final _openRouter = OpenRouterHairAnalysisService();
+
   File? _image;
-  String _aiResult = '';
   bool _analyzing = false;
-  String _filterTag = 'All';
-  _Style? _selectedStyle;
 
-  static const _allTags = ['All', 'Short', 'Medium', 'Curly', 'Updo',
-      'Trendy', 'Classic', 'Bold', 'Casual'];
+  String? _faceShape;
+  String? _hairType;
+  String? _hairLength;
+  List<_AIStyleRec> _recommendations = [];
+  String? _analysisNote;
 
-  List<_Style> get _filteredStyles => _filterTag == 'All'
-      ? _styles
-      : _styles.where((s) => s.tags.contains(_filterTag)).toList();
+  void _clearAnalysis() {
+    _faceShape = null;
+    _hairType = null;
+    _hairLength = null;
+    _recommendations = [];
+    _analysisNote = null;
+  }
 
-  Future<void> _analyzeWithGemini() async {
+  Future<void> _analyzeWithOpenRouter() async {
     if (_image == null) return;
-    setState(() { _analyzing = true; _aiResult = ''; });
+    setState(() {
+      _analyzing = true;
+      _clearAnalysis();
+    });
     try {
       final bytes = await _image!.readAsBytes();
-      final model = GenerativeModel(
-        model: 'gemini-2.5-flash', apiKey: 'AIzaSyDTBPPWWZWQjGgf7WZhr8hkdGon1CcmwBg',
-        generationConfig: GenerationConfig(temperature: 0.4, maxOutputTokens: 500),
+      final names = hairStyles.map((s) => s.name).join(', ');
+      final result = await _openRouter.analyzeHairPhoto(
+        jpegBytes: bytes,
+        catalogStyleNames: names,
       );
-      final prompt = '''
-Analyze this photo and recommend the 3 best hair styles from this list: 
-${_styles.map((s) => s.name).join(', ')}.
 
-Also detect:
-- Face shape 
-- Current hair type (straight/wavy/curly/coily)
-- Current hair length (short/medium/long)
+      if (!mounted) return;
 
-Reply in valid JSON:
-{"face_shape":"Oval","hair_type":"Wavy","hair_length":"Medium","recommendations":[{"style":"Beachy Waves","reason":"Enhances your natural texture"},{"style":"Curtain Bangs","reason":"Frames your oval face beautifully"},{"style":"Layered Lob","reason":"Perfect for your medium length"}]}
-''';
-      final content = [Content.multi([
-        TextPart(prompt),
-        DataPart('image/jpeg', bytes),
-      ])];
-      final resp = await model.generateContent(content)
-          .timeout(const Duration(seconds: 25));
-      final text = resp.text ?? '';
-      final jsonMatch = RegExp(r'\{[\s\S]+\}').firstMatch(text);
-      if (jsonMatch != null) {
-        final data = json.decode(jsonMatch.group(0)!) as Map<String, dynamic>;
-        final recs = (data['recommendations'] as List?)
-            ?.map((r) => '• **${r['style']}** — ${r['reason']}')
-            .join('\n') ?? '';
-        setState(() {
-          _aiResult = '''**Face Shape:** ${data['face_shape'] ?? 'N/A'}
-**Hair Type:** ${data['hair_type'] ?? 'N/A'}  
-**Hair Length:** ${data['hair_length'] ?? 'N/A'}
+      final recs = result.recommendations
+          .map((r) => _AIStyleRec(style: r.style, reason: r.reason))
+          .where((r) => r.style.isNotEmpty)
+          .toList();
 
-**Recommended Styles:**
-$recs''';
-        });
-      } else {
-        setState(() => _aiResult = text);
+      final hasTraits = result.faceShape != null ||
+          result.hairType != null ||
+          result.hairLength != null;
+      final hasPayload = hasTraits || recs.isNotEmpty;
+
+      if (!hasPayload && result.errorMessage != null) {
+        setState(() => _analysisNote = result.errorMessage);
+        return;
       }
+
+      setState(() {
+        _faceShape = result.faceShape;
+        _hairType = result.hairType;
+        _hairLength = result.hairLength;
+        _recommendations = recs;
+        _analysisNote = result.errorMessage ??
+            (recs.isEmpty && hasTraits
+                ? 'No style recommendations returned. Try again.'
+                : null);
+      });
     } catch (e) {
-      setState(() => _aiResult = '❌ Could not analyse. Please check your connection and try again.');
+      if (mounted) {
+        setState(() => _analysisNote = 'Something went wrong: $e');
+      }
     } finally {
-      setState(() => _analyzing = false);
+      if (mounted) setState(() => _analyzing = false);
     }
   }
 
+  HairStyle? _catalogStyleForName(String name) {
+    final n = name.toLowerCase().trim();
+    for (final s in hairStyles) {
+      if (s.name.toLowerCase() == n) return s;
+    }
+    for (final s in hairStyles) {
+      if (n.contains(s.name.toLowerCase()) ||
+          s.name.toLowerCase().contains(n)) {
+        return s;
+      }
+    }
+    return null;
+  }
+
   @override
-  void dispose() { _tabs.dispose(); super.dispose(); }
+  void dispose() {
+    _openRouter.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: _bg,
+      backgroundColor: _roseTop,
+      extendBodyBehindAppBar: false,
       appBar: AppBar(
-        backgroundColor: _bg,
+        backgroundColor: _primary,
+        foregroundColor: Colors.white,
+        elevation: 0,
+        surfaceTintColor: Colors.transparent,
         leading: IconButton(
-          icon: const Icon(Icons.arrow_back_ios_new_rounded, color: Colors.white, size: 20),
-          onPressed: () => Navigator.pop(context)),
-        title: const Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Text('STYLE MATCH', style: TextStyle(color: Colors.white,
-              fontSize: 16, fontWeight: FontWeight.w900, letterSpacing: 0.5)),
-          Text('Find your perfect hair style', style: TextStyle(
-              color: Color(0xFF888888), fontSize: 11)),
-        ]),
-        bottom: TabBar(
-          controller: _tabs,
-          labelColor: _red, unselectedLabelColor: Colors.white38,
-          indicatorColor: _red, dividerColor: Colors.white12,
-          tabs: const [
-            Tab(text: 'BROWSE STYLES'),
-            Tab(text: 'AI MATCH'),
+          icon: const Icon(Icons.arrow_back_ios_new_rounded, size: 20),
+          onPressed: () => Navigator.pop(context),
+        ),
+        title: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(5),
+                  decoration: BoxDecoration(
+                    color: Colors.white.withValues(alpha: 0.15),
+                    borderRadius: BorderRadius.circular(6),
+                  ),
+                  child: const Icon(Icons.auto_awesome, size: 14, color: _goldHighlight),
+                ),
+                const SizedBox(width: 8),
+                const Text(
+                  'STYLE MATCH',
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontSize: 15,
+                    fontWeight: FontWeight.w900,
+                    letterSpacing: 1,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 2),
+            Text(
+              'AI · Vision · La Vogue Vista',
+              style: TextStyle(
+                color: Colors.white.withValues(alpha: 0.85),
+                fontSize: 11,
+                fontWeight: FontWeight.w500,
+              ),
+            ),
           ],
         ),
-      ),
-      body: TabBarView(controller: _tabs, children: [
-        _buildBrowseTab(),
-        _buildAIMatchTab(),
-      ]),
-    );
-  }
-
-  Widget _buildBrowseTab() {
-    return Column(children: [
-      // Filter chips
-      SizedBox(height: 52, child: ListView.separated(
-        scrollDirection: Axis.horizontal,
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-        itemCount: _allTags.length,
-        separatorBuilder: (_, __) => const SizedBox(width: 8),
-        itemBuilder: (_, i) {
-          final tag = _allTags[i];
-          final active = _filterTag == tag;
-          return GestureDetector(
-            onTap: () => setState(() { _filterTag = tag; _selectedStyle = null; }),
-            child: AnimatedContainer(
-              duration: const Duration(milliseconds: 180),
-              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
-              decoration: BoxDecoration(
-                color: active ? _red : _card,
-                borderRadius: BorderRadius.circular(16),
-                border: Border.all(color: active ? _red : Colors.white12),
-              ),
-              child: Text(tag, style: TextStyle(
-                color: active ? Colors.white : Colors.white60,
-                fontSize: 12, fontWeight: FontWeight.w700)),
-            ),
-          );
-        },
-      )),
-      // Style grid
-      Expanded(child: GridView.builder(
-        padding: const EdgeInsets.fromLTRB(16, 4, 16, 80),
-        gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-            crossAxisCount: 2, mainAxisExtent: 200, crossAxisSpacing: 12, mainAxisSpacing: 12),
-        itemCount: _filteredStyles.length,
-        itemBuilder: (_, i) => _styleCard(_filteredStyles[i]),
-      )),
-    ]);
-  }
-
-  Widget _styleCard(_Style s) {
-    final isSelected = _selectedStyle?.id == s.id;
-    return GestureDetector(
-      onTap: () => setState(() => _selectedStyle = isSelected ? null : s),
-      child: AnimatedContainer(
-        duration: const Duration(milliseconds: 200),
-        decoration: BoxDecoration(
-          color: isSelected ? s.accent.withOpacity(0.15) : _surface,
-          borderRadius: BorderRadius.circular(14),
-          border: Border.all(
-            color: isSelected ? s.accent : Colors.white12, width: 1.5),
-        ),
-        padding: const EdgeInsets.all(14),
-        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Text(s.emoji, style: const TextStyle(fontSize: 28)),
-          const SizedBox(height: 8),
-          Text(s.name, style: TextStyle(
-            color: isSelected ? s.accent : Colors.white,
-            fontSize: 14, fontWeight: FontWeight.w800)),
-          const SizedBox(height: 4),
-          Text(s.description, maxLines: 2, overflow: TextOverflow.ellipsis,
-              style: const TextStyle(color: Colors.white54, fontSize: 11, height: 1.4)),
-          const Spacer(),
-          Row(children: [
-            Icon(Icons.face_rounded, size: 12, color: _gold),
-            const SizedBox(width: 4),
-            Flexible(child: Text(s.bestFor,
-                style: const TextStyle(color: _gold, fontSize: 10),
-                overflow: TextOverflow.ellipsis)),
-          ]),
-          const SizedBox(height: 6),
-          Wrap(spacing: 4, children: s.tags.take(2).map((t) => Container(
-            padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+        bottom: PreferredSize(
+          preferredSize: const Size.fromHeight(3),
+          child: Container(
+            height: 3,
             decoration: BoxDecoration(
-              color: s.accent.withOpacity(0.15),
-              borderRadius: BorderRadius.circular(8)),
-            child: Text(t, style: TextStyle(color: s.accent, fontSize: 9, fontWeight: FontWeight.w700)),
-          )).toList()),
-        ]),
+              gradient: LinearGradient(
+                colors: [
+                  _secondary,
+                  _goldHighlight,
+                  _secondary,
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+      body: Container(
+        width: double.infinity,
+        decoration: const BoxDecoration(
+          gradient: LinearGradient(
+            begin: Alignment.topCenter,
+            end: Alignment.bottomCenter,
+            colors: [_roseTop, _roseBot],
+          ),
+        ),
+        child: _buildAIMatchTab(),
       ),
     );
   }
 
   Widget _buildAIMatchTab() {
     return SingleChildScrollView(
-      padding: const EdgeInsets.all(20),
-      child: Column(children: [
-        // Upload area
-        GestureDetector(
-          onTap: () async {
-            final f = await _picker.pickImage(source: ImageSource.gallery, imageQuality: 85);
-            if (f != null) setState(() { _image = File(f.path); _aiResult = ''; });
-          },
-          child: Container(
-            width: double.infinity, height: 220,
-            decoration: BoxDecoration(
-              color: _surface, borderRadius: BorderRadius.circular(16),
-              border: Border.all(color: _red.withOpacity(0.4), width: 1.5)),
-            child: _image != null
-                ? ClipRRect(borderRadius: BorderRadius.circular(15),
-                    child: Image.file(_image!, fit: BoxFit.cover))
-                : Column(mainAxisAlignment: MainAxisAlignment.center, children: [
-                    Icon(Icons.add_photo_alternate_outlined,
-                        color: _red.withOpacity(0.7), size: 48),
-                    const SizedBox(height: 12),
-                    const Text('Upload your photo', style: TextStyle(
-                        color: Colors.white, fontSize: 15, fontWeight: FontWeight.w700)),
-                    const SizedBox(height: 6),
-                    const Text('AI will recommend the best styles for your face',
-                        style: TextStyle(color: Color(0xFF888888), fontSize: 12),
-                        textAlign: TextAlign.center),
-                  ]),
-          ),
-        ),
-        const SizedBox(height: 16),
-        // Analyse button
-        SizedBox(width: double.infinity, height: 52,
-          child: ElevatedButton.icon(
-            onPressed: _image == null || _analyzing ? null : _analyzeWithGemini,
-            icon: _analyzing
-                ? const SizedBox(width: 18, height: 18,
-                    child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2))
-                : const Icon(Icons.auto_awesome, size: 18),
-            label: Text(_analyzing ? 'Analysing…' : 'Find My Style with AI'),
-            style: ElevatedButton.styleFrom(
-              backgroundColor: _red, foregroundColor: Colors.white,
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(26)),
-              textStyle: const TextStyle(fontSize: 14, fontWeight: FontWeight.w800)),
-          ),
-        ),
-        // Result
-        if (_aiResult.isNotEmpty) ...[
-          const SizedBox(height: 20),
+      padding: const EdgeInsets.fromLTRB(20, 20, 20, 32),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
           Container(
-            width: double.infinity,
-            padding: const EdgeInsets.all(18),
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
             decoration: BoxDecoration(
-              color: _surface, borderRadius: BorderRadius.circular(14),
-              border: Border.all(color: _gold.withOpacity(0.25))),
-            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              const Row(children: [
-                Icon(Icons.auto_awesome, color: _gold, size: 16),
-                SizedBox(width: 6),
-                Text('AI Style Analysis', style: TextStyle(
-                    color: _gold, fontSize: 13, fontWeight: FontWeight.w800)),
-              ]),
-              const Divider(color: Colors.white12, height: 20),
-              Text(_aiResult, style: const TextStyle(
-                  color: Colors.white, fontSize: 13, height: 1.6)),
-            ]),
+              gradient: LinearGradient(
+                colors: [
+                  _hairIndigoDeep.withValues(alpha: 0.9),
+                  _hairIndigo.withValues(alpha: 0.85),
+                ],
+              ),
+              borderRadius: BorderRadius.circular(12),
+              boxShadow: [
+                BoxShadow(
+                  color: _hairIndigo.withValues(alpha: 0.25),
+                  blurRadius: 12,
+                  offset: const Offset(0, 4),
+                ),
+              ],
+            ),
+            child: Row(
+              children: [
+                const Text('💇', style: TextStyle(fontSize: 22)),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'Match your look',
+                        style: TextStyle(
+                          color: Colors.white.withValues(alpha: 0.95),
+                          fontSize: 13,
+                          fontWeight: FontWeight.w800,
+                        ),
+                      ),
+                      Text(
+                        'Same flow as your dashboard Style Match chip',
+                        style: TextStyle(
+                          color: Colors.white.withValues(alpha: 0.75),
+                          fontSize: 11,
+                          height: 1.3,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 20),
+          Text(
+            'Upload your photo',
+            style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                  color: _ink,
+                  fontWeight: FontWeight.w900,
+                  fontSize: 18,
+                ),
+          ),
+          const SizedBox(height: 6),
+          const Text(
+            'Clear face and hair visible — we read face shape and suggest catalogue styles.',
+            style: TextStyle(color: _muted, fontSize: 13, height: 1.35),
+          ),
+          if (OpenRouterHairAnalysisService.apiKey.isEmpty) ...[
+            const SizedBox(height: 14),
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(14),
+              decoration: BoxDecoration(
+                color: _secondary.withValues(alpha: 0.12),
+                borderRadius: BorderRadius.circular(14),
+                border: Border.all(
+                  color: _secondary.withValues(alpha: 0.35),
+                ),
+              ),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Icon(Icons.key_rounded, color: _secondary.withValues(alpha: 0.9), size: 22),
+                  const SizedBox(width: 12),
+                  const Expanded(
+                    child: Text(
+                      'Add OPENROUTER_API_KEY to `.env` (see `.env.example`) or use '
+                      '--dart-define=OPENROUTER_API_KEY=sk-or-v1-...',
+                      style: TextStyle(color: _ink, fontSize: 12, height: 1.4),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+          const SizedBox(height: 18),
+          Material(
+            color: Colors.transparent,
+            child: InkWell(
+              onTap: () async {
+                final f = await _picker.pickImage(
+                  source: ImageSource.gallery,
+                  imageQuality: 85,
+                );
+                if (f != null) {
+                  setState(() {
+                    _image = File(f.path);
+                    _clearAnalysis();
+                  });
+                }
+              },
+              borderRadius: BorderRadius.circular(20),
+              child: Ink(
+                decoration: BoxDecoration(
+                  color: _card,
+                  borderRadius: BorderRadius.circular(20),
+                  border: Border.all(
+                    color: _primary.withValues(alpha: 0.12),
+                    width: 1.5,
+                  ),
+                  boxShadow: [
+                    BoxShadow(
+                      color: _primary.withValues(alpha: 0.08),
+                      blurRadius: 20,
+                      offset: const Offset(0, 8),
+                    ),
+                  ],
+                ),
+                child: Container(
+                  width: double.infinity,
+                  height: 240,
+                  alignment: Alignment.center,
+                  child: _image != null
+                      ? ClipRRect(
+                          borderRadius: BorderRadius.circular(18),
+                          child: Stack(
+                            fit: StackFit.expand,
+                            children: [
+                              Positioned.fill(
+                                child: Image.file(_image!, fit: BoxFit.cover),
+                              ),
+                              Positioned(
+                                right: 10,
+                                bottom: 10,
+                                child: Container(
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 10,
+                                    vertical: 6,
+                                  ),
+                                  decoration: BoxDecoration(
+                                    color: Colors.black.withValues(alpha: 0.45),
+                                    borderRadius: BorderRadius.circular(20),
+                                  ),
+                                  child: const Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      Icon(Icons.edit_outlined,
+                                          color: Colors.white, size: 14),
+                                      SizedBox(width: 4),
+                                      Text(
+                                        'Change',
+                                        style: TextStyle(
+                                          color: Colors.white,
+                                          fontSize: 11,
+                                          fontWeight: FontWeight.w700,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        )
+                      : Column(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            Container(
+                              padding: const EdgeInsets.all(16),
+                              decoration: BoxDecoration(
+                                shape: BoxShape.circle,
+                                color: _primary.withValues(alpha: 0.08),
+                              ),
+                              child: Icon(
+                                Icons.add_photo_alternate_outlined,
+                                color: _primary.withValues(alpha: 0.85),
+                                size: 40,
+                              ),
+                            ),
+                            const SizedBox(height: 14),
+                            Text(
+                              'Tap to choose from gallery',
+                              style: TextStyle(
+                                color: _ink,
+                                fontSize: 15,
+                                fontWeight: FontWeight.w800,
+                              ),
+                            ),
+                            const SizedBox(height: 6),
+                            Padding(
+                              padding: const EdgeInsets.symmetric(horizontal: 32),
+                              child: Text(
+                                'JPG, PNG, or HEIC — well-lit photos work best',
+                                textAlign: TextAlign.center,
+                                style: TextStyle(
+                                  color: _muted,
+                                  fontSize: 12,
+                                  height: 1.35,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                ),
+              ),
+            ),
+          ),
+          const SizedBox(height: 18),
+          SizedBox(
+            width: double.infinity,
+            height: 54,
+            child: FilledButton.icon(
+              onPressed: _image == null || _analyzing ? null : _analyzeWithOpenRouter,
+              style: FilledButton.styleFrom(
+                backgroundColor: _primary,
+                foregroundColor: Colors.white,
+                disabledBackgroundColor: _muted.withValues(alpha: 0.25),
+                disabledForegroundColor: _muted,
+                elevation: 0,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(16),
+                ),
+                textStyle: const TextStyle(
+                  fontSize: 15,
+                  fontWeight: FontWeight.w800,
+                  letterSpacing: 0.2,
+                ),
+              ),
+              icon: _analyzing
+                  ? SizedBox(
+                      width: 20,
+                      height: 20,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2.5,
+                        color: Colors.white.withValues(alpha: 0.9),
+                      ),
+                    )
+                  : const Icon(Icons.auto_awesome, size: 20),
+              label: Text(_analyzing ? 'Analysing…' : 'Find my style with AI'),
+            ),
+          ),
+          if (_analysisNote != null) ...[
+            const SizedBox(height: 18),
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: _primary.withValues(alpha: 0.06),
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(
+                  color: _primary.withValues(alpha: 0.2),
+                ),
+              ),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Icon(Icons.info_outline_rounded,
+                      color: _primary.withValues(alpha: 0.85), size: 22),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Text(
+                      _analysisNote!,
+                      style: TextStyle(
+                        color: _ink.withValues(alpha: 0.9),
+                        fontSize: 13,
+                        height: 1.45,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+          if (_faceShape != null || _hairType != null || _hairLength != null) ...[
+            const SizedBox(height: 24),
+            _sectionTitle('Your profile'),
+            const SizedBox(height: 12),
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(20),
+              decoration: BoxDecoration(
+                color: _card,
+                borderRadius: BorderRadius.circular(18),
+                border: Border.all(color: _goldHighlight.withValues(alpha: 0.35)),
+                boxShadow: [
+                  BoxShadow(
+                    color: _primary.withValues(alpha: 0.06),
+                    blurRadius: 16,
+                    offset: const Offset(0, 6),
+                  ),
+                ],
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Container(
+                        padding: const EdgeInsets.all(8),
+                        decoration: BoxDecoration(
+                          gradient: LinearGradient(
+                            colors: [
+                              _secondary.withValues(alpha: 0.2),
+                              _goldHighlight.withValues(alpha: 0.15),
+                            ],
+                          ),
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: const Icon(Icons.auto_awesome,
+                            color: _secondary, size: 18),
+                      ),
+                      const SizedBox(width: 12),
+                      const Text(
+                        'AI style read',
+                        style: TextStyle(
+                          color: _ink,
+                          fontSize: 15,
+                          fontWeight: FontWeight.w900,
+                        ),
+                      ),
+                    ],
+                  ),
+                  Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 14),
+                    child: Divider(height: 1, color: _roseBot.withValues(alpha: 0.8)),
+                  ),
+                  if (_faceShape != null)
+                    _resultRow(Icons.face_rounded, 'Face shape', _faceShape!),
+                  if (_hairType != null)
+                    _resultRow(Icons.waves_rounded, 'Hair type', _hairType!),
+                  if (_hairLength != null)
+                    _resultRow(
+                        Icons.straighten_rounded, 'Hair length', _hairLength!),
+                ],
+              ),
+            ),
+          ],
+          if (_recommendations.isNotEmpty) ...[
+            const SizedBox(height: 24),
+            _sectionTitle('Top picks for you'),
+            const SizedBox(height: 12),
+            ..._recommendations.map((r) {
+              final cat = _catalogStyleForName(r.style);
+              return Padding(
+                padding: const EdgeInsets.only(bottom: 12),
+                child: _AIResultStyleTile(
+                  style: cat,
+                  fallbackName: r.style,
+                  aiReason: r.reason.isNotEmpty ? r.reason : null,
+                ),
+              );
+            }),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _sectionTitle(String text) {
+    return Row(
+      children: [
+        Container(
+          width: 4,
+          height: 18,
+          decoration: BoxDecoration(
+            color: _secondary,
+            borderRadius: BorderRadius.circular(2),
+          ),
+        ),
+        const SizedBox(width: 10),
+        Text(
+          text.toUpperCase(),
+          style: const TextStyle(
+            color: _muted,
+            fontSize: 11,
+            fontWeight: FontWeight.w800,
+            letterSpacing: 1.4,
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _resultRow(IconData icon, String label, String value) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 12),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            padding: const EdgeInsets.all(6),
+            decoration: BoxDecoration(
+              color: _primary.withValues(alpha: 0.08),
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: Icon(icon, size: 18, color: _primary.withValues(alpha: 0.9)),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  label,
+                  style: TextStyle(
+                    color: _muted,
+                    fontSize: 11,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  value,
+                  style: const TextStyle(
+                    color: _ink,
+                    fontSize: 16,
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+              ],
+            ),
           ),
         ],
-      ]),
+      ),
+    );
+  }
+}
+
+// ─── AI result style tile (catalog match + optional AI reason) ───────────────
+class _AIResultStyleTile extends StatelessWidget {
+  final HairStyle? style;
+  final String fallbackName;
+  final String? aiReason;
+
+  const _AIResultStyleTile({
+    required this.style,
+    required this.fallbackName,
+    this.aiReason,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final s = style;
+    final name = s?.name ?? fallbackName;
+    final accent = s?.accent ?? _primary;
+    final shape = s?.overlayShape ?? 'long';
+    final bestFor = s?.bestFor ?? 'Suggested by AI';
+
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: _card,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: accent.withValues(alpha: 0.28)),
+        boxShadow: [
+          BoxShadow(
+            color: accent.withValues(alpha: 0.1),
+            blurRadius: 12,
+            offset: const Offset(0, 4),
+          ),
+        ],
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            width: 48,
+            height: 48,
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+                colors: [
+                  accent.withValues(alpha: 0.15),
+                  accent.withValues(alpha: 0.08),
+                ],
+              ),
+              borderRadius: BorderRadius.circular(14),
+            ),
+            child: Center(
+              child: CustomPaint(
+                size: const Size(28, 24),
+                painter: HairIconPainter(shape: shape, color: accent),
+              ),
+            ),
+          ),
+          const SizedBox(width: 14),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  name,
+                  style: TextStyle(
+                    color: accent,
+                    fontSize: 14,
+                    fontWeight: FontWeight.w900,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  bestFor,
+                  style: const TextStyle(
+                    color: _muted,
+                    fontSize: 12,
+                    height: 1.25,
+                  ),
+                ),
+                if (aiReason != null && aiReason!.isNotEmpty) ...[
+                  const SizedBox(height: 10),
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: _roseTop,
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(
+                        color: _primary.withValues(alpha: 0.08),
+                      ),
+                    ),
+                    child: Text(
+                      aiReason!,
+                      style: const TextStyle(
+                        color: _ink,
+                        fontSize: 13,
+                        height: 1.4,
+                      ),
+                    ),
+                  ),
+                ],
+              ],
+            ),
+          ),
+        ],
+      ),
     );
   }
 }

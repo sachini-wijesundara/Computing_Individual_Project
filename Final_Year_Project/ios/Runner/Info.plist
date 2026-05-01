@@ -51,6 +51,8 @@
 	<string>This app may need microphone access for video recording features.</string>
 	<key>NSPhotoLibraryUsageDescription</key>
 	<string>This app needs photo library access to save and load makeup looks.</string>
+	<key>NSPhotoLibraryAddUsageDescription</key>
+	<string>This app saves your hair style try-on photos to your photo library.</string>
 	
 	<!-- Google Sign-In required URL scheme -->
 	<key>CFBundleURLTypes</key>

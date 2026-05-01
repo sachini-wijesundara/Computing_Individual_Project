@@ -47,7 +47,9 @@ flutter {
 
 dependencies {
     // MediaPipe — FaceLandmarker, MPImage, RunningMode, ImageProcessingOptions etc.
-    implementation("com.google.mediapipe:tasks-vision:0.10.14")
+    implementation("com.google.mediapipe:tasks-vision:0.10.14") {
+        exclude(group = "com.google.ai.edge.litert")
+    }
 
     // CameraX — ImageProxy, planes, ImageAnalysis, PreviewView, ProcessCameraProvider
     implementation("androidx.camera:camera-core:1.3.4")
@@ -57,4 +59,8 @@ dependencies {
 
     // Lifecycle
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.7.0")
+
+    // TensorFlow Lite — nail segmentation model inference
+    implementation("org.tensorflow:tensorflow-lite:2.14.0")
+    implementation("org.tensorflow:tensorflow-lite-support:0.4.4")
 }

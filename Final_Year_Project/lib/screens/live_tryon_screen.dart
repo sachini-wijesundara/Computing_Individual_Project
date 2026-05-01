@@ -1,3 +1,4 @@
+import 'package:la_vogue_vista/widgets/firebase_image.dart';
 import 'package:camera/camera.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart';
@@ -670,11 +671,9 @@ class _LiveTryOnScreenState extends State<LiveTryOnScreen> {
               width: 44,
               height: 44,
               child: imagePath.startsWith('assets/')
-                  ? Image.asset(
-                      imagePath,
+                  ? FirebaseStorageImage(
+                      storagePath: imagePath,
                       fit: BoxFit.contain,
-                      errorBuilder: (_, __, ___) =>
-                          const Icon(Icons.inventory_2_outlined, color: Colors.black45),
                     )
                   : const Icon(Icons.inventory_2_outlined, color: Colors.black45),
             ),

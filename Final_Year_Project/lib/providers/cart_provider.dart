@@ -43,9 +43,26 @@ class CartProvider extends ChangeNotifier {
     notifyListeners();
   }
 
+  CartItem? _lastRemovedItem;
+  int? _lastRemovedIndex;
+
   void removeFromCart(CartItem cartItem) {
-    _items.removeWhere((item) => item.id == cartItem.id);
-    notifyListeners();
+    final index = _items.indexWhere((item) => item.id == cartItem.id);
+    if (index >= 0) {
+      _lastRemovedItem = _items[index];
+      _lastRemovedIndex = index;
+      _items.removeAt(index);
+      notifyListeners();
+    }
+  }
+
+  void undoDelete() {
+    if (_lastRemovedItem != null && _lastRemovedIndex != null) {
+      _items.insert(_lastRemovedIndex!, _lastRemovedItem!);
+      _lastRemovedItem = null;
+      _lastRemovedIndex = null;
+      notifyListeners();
+    }
   }
 
   void updateQuantity(CartItem cartItem, int newQuantity) {

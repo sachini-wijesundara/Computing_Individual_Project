@@ -1,16 +1,18 @@
 // lib/widgets/simple_lip_painter.dart
 //
 // A simple custom painter that renders a lipstick overlay from normalised
-// lip landmark points.  Used by LipOverlayPainter.
+// lip landmark points. Used by LipOverlayPainter.
 
 import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 
+class SimpleLipPainter extends CustomPainter {
   final List<Offset> lipPoints;
   final Color color;
   final double opacity;
   final ui.Size frameSize;
 
+  SimpleLipPainter({
     required this.lipPoints,
     required this.color,
     required this.opacity,
@@ -21,8 +23,7 @@ import 'package:flutter/material.dart';
   void paint(Canvas canvas, ui.Size size) {
     if (lipPoints.length < 3) return;
 
-    // Map normalised [0-1] coordinates to canvas pixels
-    final scaleX = size.width  / (frameSize.width  > 0 ? frameSize.width  : 1);
+    final scaleX = size.width / (frameSize.width > 0 ? frameSize.width : 1);
     final scaleY = size.height / (frameSize.height > 0 ? frameSize.height : 1);
 
     final pixelPoints = lipPoints
@@ -35,7 +36,6 @@ import 'package:flutter/material.dart';
     }
     path.close();
 
-    // Fill
     canvas.drawPath(
       path,
       Paint()
@@ -44,7 +44,6 @@ import 'package:flutter/material.dart';
         ..blendMode = BlendMode.multiply,
     );
 
-    // Soft edge glow
     canvas.drawPath(
       path,
       Paint()
@@ -56,7 +55,9 @@ import 'package:flutter/material.dart';
   }
 
   @override
+  bool shouldRepaint(SimpleLipPainter old) =>
       old.lipPoints != lipPoints ||
       old.color != color ||
-      old.opacity != opacity;
+      old.opacity != opacity ||
+      old.frameSize != frameSize;
 }

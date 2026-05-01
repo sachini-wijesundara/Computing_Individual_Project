@@ -26,6 +26,7 @@ DerivedData/
 # Environment
 .env
 .env.*
+!.env.example
 
 # Generated
 lib/firebase/firebase_options.dart

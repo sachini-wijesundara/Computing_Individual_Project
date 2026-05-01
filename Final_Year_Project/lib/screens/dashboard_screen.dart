@@ -1,3 +1,4 @@
+import 'package:la_vogue_vista/widgets/firebase_image.dart';
 import 'dart:async';
 import 'dart:math' as math;
 
@@ -16,6 +17,8 @@ import 'virtual_tryon_popup.dart';
 import 'hair_color_tryon_screen.dart';
 import 'hair_style_matcher_screen.dart';
 import 'mens_shade_matcher_screen.dart';
+import 'nail_tryon_landing.dart';
+import 'cart_screen.dart';
 
 /// Colors / helpers
 const _roseTop = Color(0xFFF5F5F5);
@@ -57,27 +60,11 @@ class _ProductImage extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     if (imagePath.isNotEmpty && imagePath.startsWith('assets/')) {
-      return Image.asset(
-        imagePath,
+      return FirebaseStorageImage(
+        storagePath: imagePath,
         width: width,
         height: height,
         fit: fit,
-        errorBuilder: (_, __, ___) {
-          if (kDebugMode) {
-            print('⚠️ Asset not found: $imagePath');
-          }
-          if (imageUrl.isNotEmpty && imageUrl.startsWith('http')) {
-            return CachedNetworkImage(
-              imageUrl: imageUrl,
-              width: width,
-              height: height,
-              fit: fit,
-              errorWidget: (_, __, ___) =>
-              const Icon(Icons.broken_image, color: _muted, size: 48),
-            );
-          }
-          return const Icon(Icons.broken_image, color: _muted, size: 48);
-        },
       );
     }
 
@@ -124,7 +111,7 @@ class _DashboardPageState extends State<DashboardPage> {
     final pages = <Widget>[
       const _HomeFeed(),
       const _SimplePage(title: 'Home'), // index 1 is never shown (Try Live = push nav)
-      const _SimplePage(title: 'Cart'),
+      const CartScreen(showBackButton: false),
       const _SimplePage(title: 'Settings'),
       const _SimplePage(title: 'Profile'),
     ];
@@ -148,7 +135,7 @@ class _HomeFeed extends StatefulWidget {
 
 class _HomeFeedState extends State<_HomeFeed> {
   // MUST match Firestore category values
-  static const _categories = ['All', 'Lip Sticks', 'Makeup', 'Hair'];
+  static const _categories = ['All', 'Lip Sticks', 'Makeup', 'Hair', 'Nails'];
   static const _makeupGroups = ['All Makeup', 'Eye Products', 'Face Products'];
   static const _eyeSubcategories = [
     'All Eye Products',
@@ -184,8 +171,10 @@ class _HomeFeedState extends State<_HomeFeed> {
   // Active subcategory when the 'Face' top-level tab is selected.
   String _faceSubcat = _faceSubcats.first;
   // Firestore category value to query (Hair tab queries 'Hair Colors').
-  String get _firestoreCategory =>
-      _category == 'Hair' ? 'Hair Colors' : _category;
+  String get _firestoreCategory {
+    if (_category == 'Hair') return 'Hair Colors';
+    return _category;
+  }
 
   Stream<List<Product>> _stream() =>
       FirestoreDb.instance.productsByCategory(_firestoreCategory);
@@ -352,12 +341,18 @@ class _HomeFeedState extends State<_HomeFeed> {
                 child: _CenteredChips(
                   categories: _categories,
                   active: _category,
-                  onChanged: (c) => setState(() {
-                    _category = c;
-                    _makeupGroup = _makeupGroups.first;
-                    _makeupSubcategory = 'All Makeup';
-                    _faceSubcat = _faceSubcats.first;
-                  }),
+                  onChanged: (c) {
+                    if (c == 'Nails') {
+                      showNailTryOnEntry(context);
+                      return;
+                    }
+                    setState(() {
+                      _category = c;
+                      _makeupGroup = _makeupGroups.first;
+                      _makeupSubcategory = 'All Makeup';
+                      _faceSubcat = _faceSubcats.first;
+                    });
+                  },
                 ),
               ),
               const SliverToBoxAdapter(child: SizedBox(height: 12)),
@@ -896,64 +891,64 @@ class _FaceSubcatChips extends StatelessWidget {
 }
 
 
-// ─── Hair Feature Tiles ────────────────────────────────────────────────────────
+// ─── Hair Feature Chips ────────────────────────────────────────────────────────
 class _HairFeatureTiles extends StatelessWidget {
   const _HairFeatureTiles();
 
   @override
   Widget build(BuildContext context) {
-    const tiles = [
-      _HairTileData(
-        icon: Icons.colorize_rounded,
+    const chips = [
+      _HairChipData(
         emoji: '🎨',
         title: 'Colour Match',
-        subtitle: 'Try hair colours live on camera',
         gradient: [Color(0xFF7C150D), Color(0xFFB84A4A)],
         screen: 'colour',
       ),
-      _HairTileData(
-        icon: Icons.face_retouching_natural_outlined,
+      _HairChipData(
         emoji: '💇',
         title: 'Style Match',
-        subtitle: 'Find your perfect hair style with AI',
         gradient: [Color(0xFF1A237E), Color(0xFF3949AB)],
         screen: 'style',
       ),
-      _HairTileData(
-        icon: Icons.man_2_outlined,
+      _HairChipData(
         emoji: '🧔',
         title: "Men's Shade",
-        subtitle: '3-question shade finder quiz',
         gradient: [Color(0xFF1B5E20), Color(0xFF388E3C)],
         screen: 'mens',
       ),
     ];
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 16),
-      child: Row(children: tiles.map((t) => Expanded(child: Padding(
-        padding: EdgeInsets.only(right: t != tiles.last ? 10 : 0),
-        child: _HairTile(data: t),
-      ))).toList()),
+    return SizedBox(
+      height: 44,
+      child: ListView.separated(
+        scrollDirection: Axis.horizontal,
+        padding: const EdgeInsets.symmetric(horizontal: 16),
+        itemCount: chips.length,
+        separatorBuilder: (_, __) => const SizedBox(width: 10),
+        itemBuilder: (context, i) => _HairChip(data: chips[i]),
+      ),
     );
   }
 }
 
-class _HairTileData {
-  final IconData icon;
-  final String emoji, title, subtitle, screen;
+class _HairChipData {
+  final String emoji, title, screen;
   final List<Color> gradient;
-  const _HairTileData({required this.icon, required this.emoji,
-      required this.title, required this.subtitle,
-      required this.gradient, required this.screen});
+  const _HairChipData({
+    required this.emoji,
+    required this.title,
+    required this.gradient,
+    required this.screen,
+  });
 }
 
-class _HairTile extends StatelessWidget {
-  final _HairTileData data;
-  const _HairTile({required this.data});
+class _HairChip extends StatelessWidget {
+  final _HairChipData data;
+  const _HairChip({required this.data});
 
   @override
   Widget build(BuildContext context) {
-    return GestureDetector(
+    return InkWell(
+      borderRadius: BorderRadius.circular(22),
       onTap: () {
         switch (data.screen) {
           case 'colour':
@@ -971,26 +966,33 @@ class _HairTile extends StatelessWidget {
         }
       },
       child: Container(
-        height: 110,
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
         decoration: BoxDecoration(
           gradient: LinearGradient(
               colors: data.gradient,
-              begin: Alignment.topLeft, end: Alignment.bottomRight),
-          borderRadius: BorderRadius.circular(14),
+              begin: Alignment.centerLeft,
+              end: Alignment.centerRight),
+          borderRadius: BorderRadius.circular(22),
           boxShadow: [BoxShadow(
-              color: data.gradient.last.withOpacity(.3),
-              blurRadius: 8, offset: const Offset(0, 3))],
+              color: data.gradient.last.withOpacity(.25),
+              blurRadius: 6, offset: const Offset(0, 2))],
         ),
-        padding: const EdgeInsets.all(12),
-        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Text(data.emoji, style: const TextStyle(fontSize: 24)),
-          const Spacer(),
-          Text(data.title, style: const TextStyle(
-              color: Colors.white, fontSize: 13, fontWeight: FontWeight.w800)),
-          const SizedBox(height: 2),
-          Text(data.subtitle, maxLines: 2, overflow: TextOverflow.ellipsis,
-              style: const TextStyle(color: Colors.white70, fontSize: 9, height: 1.3)),
-        ]),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(data.emoji, style: const TextStyle(fontSize: 15)),
+            const SizedBox(width: 6),
+            Text(
+              data.title,
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 13,
+                fontWeight: FontWeight.w800,
+                letterSpacing: .2,
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }

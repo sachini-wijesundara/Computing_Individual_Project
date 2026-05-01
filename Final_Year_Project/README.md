@@ -4,6 +4,36 @@ La Vogue Vista is a Flutter application that combines **live lipstick/makeup try
 
 This document explains how the AI parts work in the current project so you can understand what is “real model inference” vs “pixel‑based heuristics”.
 
+## API keys & environment (submission / markers)
+
+**`.env` is not part of the submission.** It is listed in `.gitignore` so real secrets are never committed. That is intentional and correct for security and for coursework hand‑in.
+
+**What you do submit:** the tracked file **`.env.example`**, which documents every variable with no real values.
+
+**How markers (or a new machine) run the app with AI features:**
+
+1. Copy the template and add keys locally (this file stays only on their machine):
+   ```bash
+   cd Final_Year_Project
+   cp .env.example .env
+   ```
+2. Edit `.env` and set:
+   - **`GEMINI_API_KEY`** — from [Google AI Studio](https://aistudio.google.com/app/apikey) (Lumi chat + Skin & Hair vision in `TFLiteAnalysisService` / `GeminiChatService`).
+   - **`OPENROUTER_API_KEY`** — from [OpenRouter](https://openrouter.ai/keys) (Hair **Style Match** screen only).
+3. Install and run on a device/simulator using a **full** build so `--dart-define` is applied, e.g.:
+   ```bash
+   ./ios_quick_run.sh
+   ```
+   or:
+   ```bash
+   flutter run --dart-define=GEMINI_API_KEY=YOUR_KEY --dart-define=OPENROUTER_API_KEY=YOUR_KEY
+   ```
+   Hot reload does **not** refresh API keys; change `.env` and run **`flutter run` again** (or the script above).
+
+**If markers run without any keys:** the app still runs; features fall back or show setup hints (e.g. offline chat text, pixel/TFLite fallbacks for analysis, Style Match asks for OpenRouter). Live try‑on and most shopping flows do not need these keys.
+
+**For your report / Viva:** state that secrets are supplied via `.env` (from `.env.example`) or `--dart-define`, and are excluded from version control by design.
+
 ## Live Try‑On (Lipsticks & Makeup)
 
 - Implemented fully on‑device using:

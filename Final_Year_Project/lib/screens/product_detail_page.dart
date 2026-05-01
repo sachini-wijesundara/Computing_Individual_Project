@@ -1,11 +1,15 @@
+import 'package:la_vogue_vista/widgets/firebase_image.dart';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
+import '../providers/cart_provider.dart';
 
 import '../models/product.dart';
 import '../services/firestore_service.dart';
 import 'live_tryon_screen.dart';
 import 'hair_color_tryon_screen.dart';
+import 'cart_screen.dart';
 
 // ── Colour constants (same palette as dashboard) ──────────────────────────────
 const _maroon = Color(0xFF7C150D);
@@ -120,18 +124,45 @@ class _ProductDetailPageState extends State<ProductDetailPage> {
   }
 
   void _addToCart() async {
+    final cart = Provider.of<CartProvider>(context, listen: false);
+    
+    // Get the currently selected shade if available
+    ProductShade? selectedShade;
+    if (_detailShades.isNotEmpty) {
+      final shadeData = _detailShades[_selectedShadeIndex];
+      selectedShade = ProductShade(name: shadeData['name'] ?? 'Shade');
+    }
+
+    // Update local provider state for immediate UI feedback
+    cart.addToCart(p, shade: selectedShade);
+
+    // Sync with Firestore in background
     final uid = FirebaseAuth.instance.currentUser?.uid;
-    if (uid == null) return;
-    await FirestoreDb.instance.addToCart(uid, p);
+    if (uid != null) {
+      FirestoreDb.instance.addToCart(uid, p);
+    }
+    
     if (!mounted) return;
     setState(() => _addedToCart = true);
+    
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text('${p.name} added to cart!'),
         backgroundColor: _maroon,
+        duration: const Duration(seconds: 1),
         behavior: SnackBarBehavior.floating,
       ),
     );
+
+    // Redirect to Cart Page
+    Future.delayed(const Duration(milliseconds: 500), () {
+      if (mounted) {
+        Navigator.push(
+          context,
+          MaterialPageRoute(builder: (_) => const CartScreen()),
+        );
+      }
+    });
   }
 
   void _liveTryOn() {
@@ -168,10 +199,8 @@ class _ProductDetailPageState extends State<ProductDetailPage> {
 
   Widget _productImage() {
     if (p.imagePath.isNotEmpty && p.imagePath.startsWith('assets/')) {
-      return Image.asset(
-        p.imagePath,
+      return FirebaseStorageImage(storagePath: p.imagePath,
         fit: BoxFit.contain,
-        errorBuilder: (_, __, ___) => _networkOrPlaceholder(),
       );
     }
     return _networkOrPlaceholder();

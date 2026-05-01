@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:la_vogue_vista/widgets/firebase_image.dart';
 
 class FloatingProductBanner extends StatelessWidget {
   const FloatingProductBanner({
@@ -53,7 +54,7 @@ class FloatingProductBanner extends StatelessWidget {
             child: ClipRRect(
               borderRadius: BorderRadius.circular(8),
               child: image.isNotEmpty
-                  ? Image.asset(image, fit: BoxFit.contain)
+                  ? FirebaseStorageImage(storagePath: image, fit: BoxFit.contain)
                   : const Icon(Icons.image, color: Colors.black26),
             ),
           ),

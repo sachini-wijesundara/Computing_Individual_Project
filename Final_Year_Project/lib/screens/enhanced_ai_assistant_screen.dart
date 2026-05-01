@@ -1,14 +1,9 @@
-// lib/screens/enhanced_ai_assistant_screen.dart
-//
-// Beauty Analysis — pixel-matched to the design screenshots.
-// Dark brownish-maroon bg, AI badge, SKIN/HAIR pill tabs, photo area,
-// circular-avatar result card, product card rows, lightbulb care tips.
-
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import '../services/tflite_analysis_service.dart';
 import '../services/gemini_chat_service.dart';
+import '../models/hair_style.dart';
 
 // ── Palette ───────────────────────────────────────────────────────────────────
 const _bg       = Color(0xFF111111);   // neutral dark (matches screenshot)
@@ -52,7 +47,12 @@ class _EnhancedAIAssistantScreenState
 
   // ── Analyze ────────────────────────────────────────────────────────────────
   Future<void> _analyze(File file) async {
-    setState(() { _image = file; _analyzing = true; _skin = null; _hair = null; });
+    setState(() {
+      _image = file;
+      _analyzing = true;
+      _skin = null;
+      _hair = null;
+    });
     try {
       await _tflite.initialize();
       final skin = await _tflite.analyzeSkin(file);
@@ -64,9 +64,20 @@ class _EnhancedAIAssistantScreenState
       ));
       if (!mounted) return;
       setState(() { _skin = skin; _hair = hair; _analyzing = false; });
-    } catch (_) {
+    } catch (e, st) {
+      debugPrint('Enhanced AI analysis error: $e\n$st');
       if (!mounted) return;
-      setState(() { _analyzing = false; });
+      setState(() => _analyzing = false);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            'Analysis could not finish. If hair styles are missing, try again or check your network.\n$e',
+            style: const TextStyle(fontSize: 13),
+          ),
+          duration: const Duration(seconds: 6),
+        ),
+      );
     }
   }
 
@@ -149,10 +160,30 @@ class _EnhancedAIAssistantScreenState
       padding: const EdgeInsets.symmetric(horizontal: 16),
       child: Row(children: [
         _TabPill(label: 'SKIN',  icon: Icons.face_retouching_natural_outlined,
-            active: _tab == 0, onTap: () => setState(() => _tab = 0)),
+            active: _tab == 0, onTap: () {
+              if (_tab != 0) {
+                setState(() {
+                  _tab = 0;
+                  _image = null;
+                  _skin = null;
+                  _hair = null;
+                  _analyzing = false;
+                });
+              }
+            }),
         const SizedBox(width: 10),
         _TabPill(label: 'HAIR',  icon: Icons.self_improvement_outlined,
-            active: _tab == 1, onTap: () => setState(() => _tab = 1)),
+            active: _tab == 1, onTap: () {
+              if (_tab != 1) {
+                setState(() {
+                  _tab = 1;
+                  _image = null;
+                  _skin = null;
+                  _hair = null;
+                  _analyzing = false;
+                });
+              }
+            }),
       ]),
     );
   }
@@ -279,10 +310,85 @@ class _EnhancedAIAssistantScreenState
       const SizedBox(height: 8),
       ...h.productRecommendations.entries.map((e) => _productRow(e.key, e.value)),
       const SizedBox(height: 20),
+      if (h.recommendedStyles.isNotEmpty) ...[
+        _sectionHeader('RECOMMENDED HAIRSTYLES'),
+        const SizedBox(height: 12),
+        SizedBox(
+          height: 110,
+          child: ListView.separated(
+            scrollDirection: Axis.horizontal,
+            itemCount: h.recommendedStyles.length,
+            separatorBuilder: (_, __) => const SizedBox(width: 12),
+            itemBuilder: (context, i) {
+              final name = h.recommendedStyles[i];
+              final style = hairStyles.firstWhere(
+                (s) => s.name.toLowerCase() == name.toLowerCase(),
+                orElse: () => hairStyles.first,
+              );
+              return _styleMiniCard(style);
+            },
+          ),
+        ),
+        const SizedBox(height: 20),
+      ],
       _sectionHeader('CARE TIPS'),
       const SizedBox(height: 8),
       ...h.careTips.map((t) => _careTipRow(t)),
     ]);
+  }
+
+  Widget _styleMiniCard(HairStyle s) {
+    return Container(
+      width: 140,
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: _surface,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: s.accent.withOpacity(.3)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Container(
+                width: 32, height: 32,
+                decoration: BoxDecoration(
+                  color: s.accent.withOpacity(.1),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Center(
+                  child: CustomPaint(
+                    size: const Size(20, 18),
+                    painter: HairIconPainter(shape: s.overlayShape, color: s.accent),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  s.name,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    color: s.accent,
+                    fontSize: 12,
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          Text(
+            s.bestFor,
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(color: _muted, fontSize: 10),
+          ),
+        ],
+      ),
+    );
   }
 
   // ─────────────────────────────────────────────────────────────────────────

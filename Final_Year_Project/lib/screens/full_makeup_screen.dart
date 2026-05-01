@@ -9,6 +9,7 @@ import '../models/product.dart';
 import '../native_lip_renderer.dart';
 import '../services/firestore_service.dart';
 import '../widgets/live_tryon_widgets.dart';
+import '../widgets/firebase_image.dart';
 
 // ── Colours ────────────────────────────────────────────────────────────────────
 const _maroon = Color(0xFF7C150D);
@@ -520,8 +521,7 @@ class _ProductTile extends StatelessWidget {
                 borderRadius: BorderRadius.circular(8), color: Colors.white10),
               child: product.imagePath.startsWith('assets/')
                   ? ClipRRect(borderRadius: BorderRadius.circular(8),
-                      child: Image.asset(product.imagePath, fit: BoxFit.contain,
-                        errorBuilder: (_, __, ___) => _shade()))
+                      child: FirebaseStorageImage(storagePath: product.imagePath, fit: BoxFit.contain))
                   : _shade(),
             ),
             // Name + cart

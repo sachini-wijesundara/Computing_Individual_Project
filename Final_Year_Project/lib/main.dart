@@ -14,6 +14,7 @@ import 'screens/dashboard_screen.dart';
 
 import 'providers/makeup_provider.dart';
 import 'providers/auth_provider.dart';
+import 'providers/cart_provider.dart';
 
 import 'firebase/firebase_config.dart';
 import 'services/firestore_service.dart'; // exposes seedAllProductsOnce()
@@ -51,6 +52,7 @@ class MyApp extends StatelessWidget {
       providers: [
         ChangeNotifierProvider(create: (_) => AuthProvider()),
         ChangeNotifierProvider(create: (_) => MakeupProvider()),
+        ChangeNotifierProvider(create: (_) => CartProvider()),
       ],
       child: MaterialApp(
         debugShowCheckedModeBanner: false,

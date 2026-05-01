@@ -63,6 +63,16 @@
       debugServiceExtension = "internal"
       enableGPUValidationMode = "1"
       allowLocationSimulation = "YES">
+      <PreActions>
+         <ExecutionAction
+            ActionType = "Xcode.IDEStandardExecutionActionsCore.ExecutionActionType.ShellScriptAction">
+            <ActionContent
+               title = "Stop Runner if already running"
+               scriptText = "/bin/bash &quot;${SRCROOT}/kill_runner_on_device.sh&quot; || true&#10;"
+               shellToInvoke = "/bin/bash">
+            </ActionContent>
+         </ExecutionAction>
+      </PreActions>
       <BuildableProductRunnable
          runnableDebuggingMode = "0">
          <BuildableReference

@@ -39,6 +39,7 @@ dependencies:
   firebase_messaging: ^16.1.0
   google_sign_in: ^6.2.2
   camera_android: ^0.10.10+6
+  gal: ^2.3.2
 
 dev_dependencies:
   flutter_test:
@@ -49,8 +50,11 @@ flutter:
   - assets/shaders/lipstick.frag
   uses-material-design: true
   assets:
-  - assets/images/
   - assets/logo.png
+  # MediaPipe + live try-on models (used by native renderer)
+  - assets/models/face_landmarker.task
+  - assets/models/hand_landmarker.task
+  - assets/models/hair_segmenter.tflite
   - assets/models/hair_type_classifier.tflite
   - assets/models/hair_type_classifier_labels.json
   - assets/models/hair_color_classifier.tflite
@@ -61,48 +65,8 @@ flutter:
   - assets/models/undertone_classifier_labels.json
   - assets/models/makeup_detector.tflite
   - assets/models/makeup_detector_labels.json
+  - assets/models/nail_segmentation.tflite
+  - assets/models/nail_segmentation_labels.json
   - assets/icons/google.png
   - assets/icons/ai.png
   - assets/masks/lip_oval.png
-  - assets/products/lipsticks/satin.png
-  - assets/products/lipsticks/Hyaluron lip oil.png
-  - assets/products/lipsticks/intense volume matte.png
-  - assets/products/lipsticks/matte resistance.png
-  - assets/products/lipsticks/balm-in lipstick.png
-  - assets/products/lipsticks/8 hours pro lip gloss.png
-  - assets/products/lipsticks/less nus by colour.png
-  - assets/products/lipsticks/reds of worth satin.png
-  - assets/products/lipsticks/lip balm-in gloss.png
-  - assets/products/lipsticks/lip liner.png
-  - assets/products/eye products/mascara/big deal .png
-  - assets/products/eye products/mascara/extensionist masacra.png
-  - assets/products/eye products/mascara/extensionist mascara washable.png
-  - assets/products/eye products/mascara/original washable bold eye.png
-  - assets/products/eye products/mascara/super star water prrof.png
-  - assets/products/eye products/mascara/superstart.png
-  - assets/products/eye products/eyeliner/grip mechanical gel eyeliner.png
-  - assets/products/eye products/eyeliner/grip precision felt water proof eye liner.png
-  - assets/products/eye products/eyeliner/matee-matic.png
-  - assets/products/eye products/eyeliner/new fail eye liner.png
-  - assets/products/eye products/eyeliner/pro-last waterproof eye liner.png
-  - assets/products/eye products/eyeliner/smoldering liner.png
-  - assets/products/eye products/eyeliner/super slim liquid eye liner.png
-  - assets/products/eye products/eyeliner/super star liner.png
-  - assets/products/eye products/eyeshadows/24 hr eyeshadow.png
-  - assets/products/eye products/eyeshadows/le shadow stick.png
-  - assets/products/eye products/eyeshadows/metalic.png
-  - assets/products/eye products/eyeshadows/monos.png
-  - assets/products/eye products/eyeshadows/shimeer liquid eye shadow.png
-  - assets/products/eye products/eyebrow/24hr brow lamination.png
-  - assets/products/eye products/mascara/big deal buildable waterproof mascara.png
-  - assets/products/eye products/eyebrow/brow gless.png
-  - assets/products/eye products/eyebrow/definer mechanical water proof eye brow pencil.png
-  - assets/products/eye products/eyebrow/shape and fill pencil.png
-  - assets/products/eye products/eyebrow/volumizing 24h wear brow.png
-  - assets/products/face products/foundation/
-  - assets/products/face products/powder/
-  - assets/products/face products/blush/
-  - assets/products/face products/concealer/
-  - assets/products/face products/contour_bronzer/
-  - assets/products/face products/highlighter/
-  - assets/products/hair colors/

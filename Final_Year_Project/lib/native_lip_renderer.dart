@@ -152,13 +152,23 @@ class NativeLipRendererController {
     required Color shade,
     required double intensity,
     String category = "cmd_lipstick",
-    bool isCompareMode = false, // Added
+    bool isCompareMode = false,
+    String? hairStyleShape,
+    String? imageFilePath,
+    /// For [category] == `cmd_nails`: 0 solid, 1 french, 2 ombre, 3 sparkle
+    int nailArtStyle = 0,
+    /// For [category] == `cmd_nails`: 0 natural, 1 almond, 2 square, 3 stiletto
+    int nailShape = 0,
   }) async {
     await _methodChannel.invokeMethod<void>('setEffect', {
-      'shade': shade.value,
+      'shade': shade.toARGB32(),
       'intensity': intensity,
       'category': category,
-      'isCompareMode': isCompareMode, // Added
+      'isCompareMode': isCompareMode,
+      if (hairStyleShape != null) 'hairStyleShape': hairStyleShape,
+      if (imageFilePath != null) 'imageFilePath': imageFilePath,
+      'nailArtStyle': nailArtStyle,
+      'nailShape': nailShape,
     });
   }
 
