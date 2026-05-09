@@ -4,21 +4,24 @@ import 'dart:math' as math;
 
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import '../models/product.dart';
+import '../services/firebase_auth_service.dart';
 import '../services/firestore_service.dart';
 import 'ai_beauty_assistant_screen.dart';
 import 'enhanced_ai_assistant_screen.dart';
 import 'product_detail_page.dart';
 import 'live_tryon_screen.dart';
 import 'virtual_tryon_popup.dart';
-import 'hair_color_tryon_screen.dart';
 import 'hair_style_matcher_screen.dart';
 import 'mens_shade_matcher_screen.dart';
-import 'nail_tryon_landing.dart';
 import 'cart_screen.dart';
+import 'settings_screen.dart';
+import 'profile_screen.dart';
+import 'support_chat_screen.dart';
 
 /// Colors / helpers
 const _roseTop = Color(0xFFF5F5F5);
@@ -91,6 +94,7 @@ class DashboardPage extends StatefulWidget {
 
 class _DashboardPageState extends State<DashboardPage> {
   int _tab = 0;
+  bool get _hideAiFabOnCurrentTab => _tab == 2 || _tab == 3 || _tab == 4;
 
   void _onNavTap(int i) {
     if (i == 1) {
@@ -112,15 +116,207 @@ class _DashboardPageState extends State<DashboardPage> {
       const _HomeFeed(),
       const _SimplePage(title: 'Home'), // index 1 is never shown (Try Live = push nav)
       const CartScreen(showBackButton: false),
-      const _SimplePage(title: 'Settings'),
-      const _SimplePage(title: 'Profile'),
+      SettingsScreen(
+        showBackButton: true,
+        onBack: () => setState(() => _tab = 0),
+      ),
+      ProfileScreen(
+        showBackButton: true,
+        onBack: () => setState(() => _tab = 0),
+      ),
     ];
     return Scaffold(
       backgroundColor: Colors.white,
-      body: Stack(children: [pages[_tab], const _AiAssistantFab()]),
+      drawer: _DashboardSideDrawer(
+        onHome: () {
+          Navigator.pop(context);
+          setState(() => _tab = 0);
+        },
+        onLiveTryon: () {
+          Navigator.pop(context);
+          Navigator.of(context).push(
+            MaterialPageRoute(
+              fullscreenDialog: true,
+              builder: (_) => const VirtualTryOnLandingPage(),
+            ),
+          );
+        },
+        onAiSkinHair: () {
+          Navigator.pop(context);
+          Navigator.of(context).push(
+            MaterialPageRoute(
+              builder: (_) => EnhancedAIAssistantScreen(),
+            ),
+          );
+        },
+        onSettings: () {
+          Navigator.pop(context);
+          setState(() => _tab = 3);
+        },
+        onProfile: () {
+          Navigator.pop(context);
+          setState(() => _tab = 4);
+        },
+        onLogout: () async {
+          Navigator.pop(context);
+          await FirebaseAuthService.signOut();
+        },
+      ),
+      body: Stack(
+        children: [
+          pages[_tab],
+          if (!_hideAiFabOnCurrentTab) const _AiAssistantFab(),
+        ],
+      ),
       bottomNavigationBar: _FlatBottomNav(
         currentIndex: _tab,
         onTap: _onNavTap,
+      ),
+    );
+  }
+}
+
+class _DashboardSideDrawer extends StatelessWidget {
+  const _DashboardSideDrawer({
+    required this.onHome,
+    required this.onLiveTryon,
+    required this.onAiSkinHair,
+    required this.onSettings,
+    required this.onProfile,
+    required this.onLogout,
+  });
+
+  final VoidCallback onHome;
+  final VoidCallback onLiveTryon;
+  final VoidCallback onAiSkinHair;
+  final VoidCallback onSettings;
+  final VoidCallback onProfile;
+  final Future<void> Function() onLogout;
+
+  @override
+  Widget build(BuildContext context) {
+    final bottomInset = MediaQuery.paddingOf(context).bottom;
+    return Drawer(
+      backgroundColor: Colors.white,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          DrawerHeader(
+            margin: EdgeInsets.zero,
+            padding: const EdgeInsets.fromLTRB(20, 8, 16, 16),
+            decoration: const BoxDecoration(
+              gradient: LinearGradient(
+                colors: [Color(0xFF5C0F0A), _maroon, Color(0xFFA32A1F)],
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+              ),
+            ),
+            child: Align(
+              alignment: Alignment.bottomLeft,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'La Vogue Vista',
+                    style: TextStyle(
+                      color: Colors.white.withValues(alpha: 0.98),
+                      fontSize: 20,
+                      fontWeight: FontWeight.w800,
+                      letterSpacing: 0.2,
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    'Navigate',
+                    style: TextStyle(
+                      color: Colors.white.withValues(alpha: 0.85),
+                      fontSize: 13,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          Expanded(
+            child: ListView(
+              padding: const EdgeInsets.only(top: 8),
+              children: [
+                ListTile(
+                  leading: const Icon(Icons.home_rounded, color: _maroon),
+                  title: const Text(
+                    'Home',
+                    style: TextStyle(fontWeight: FontWeight.w700),
+                  ),
+                  onTap: onHome,
+                ),
+                ListTile(
+                  leading: const Icon(Icons.camera_alt_rounded, color: _maroon),
+                  title: const Text(
+                    'Live try-on',
+                    style: TextStyle(fontWeight: FontWeight.w700),
+                  ),
+                  onTap: onLiveTryon,
+                ),
+                ListTile(
+                  leading: const Icon(
+                    Icons.face_retouching_natural_rounded,
+                    color: _maroon,
+                  ),
+                  title: const Text(
+                    'AI analysis — skin & hair',
+                    style: TextStyle(fontWeight: FontWeight.w700),
+                  ),
+                  onTap: onAiSkinHair,
+                ),
+                const Divider(height: 24),
+                ListTile(
+                  leading: const Icon(Icons.settings_rounded, color: _maroon),
+                  title: const Text(
+                    'Settings',
+                    style: TextStyle(fontWeight: FontWeight.w700),
+                  ),
+                  onTap: onSettings,
+                ),
+                ListTile(
+                  leading: const Icon(Icons.person_rounded, color: _maroon),
+                  title: const Text(
+                    'Profile',
+                    style: TextStyle(fontWeight: FontWeight.w700),
+                  ),
+                  onTap: onProfile,
+                ),
+              ],
+            ),
+          ),
+          Padding(
+            padding: EdgeInsets.fromLTRB(20, 8, 20, 16 + bottomInset),
+            child: Center(
+              child: FilledButton.icon(
+                style: FilledButton.styleFrom(
+                  backgroundColor: _maroon,
+                  foregroundColor: Colors.white,
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 28,
+                    vertical: 14,
+                  ),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                ),
+                icon: const Icon(Icons.logout_rounded, size: 20),
+                label: const Text(
+                  'Log out',
+                  style: TextStyle(fontWeight: FontWeight.w800),
+                ),
+                onPressed: () async {
+                  await onLogout();
+                },
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -135,7 +331,7 @@ class _HomeFeed extends StatefulWidget {
 
 class _HomeFeedState extends State<_HomeFeed> {
   // MUST match Firestore category values
-  static const _categories = ['All', 'Lip Sticks', 'Makeup', 'Hair', 'Nails'];
+  static const _categories = ['All', 'Lip Sticks', 'Makeup', 'Hair'];
   static const _makeupGroups = ['All Makeup', 'Eye Products', 'Face Products'];
   static const _eyeSubcategories = [
     'All Eye Products',
@@ -282,6 +478,77 @@ class _HomeFeedState extends State<_HomeFeed> {
     return _matchesFaceSub(p, sub);
   }
 
+  Future<void> _openProductSearch() async {
+    final messenger = ScaffoldMessenger.of(context);
+    showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) {
+        return PopScope(
+          canPop: false,
+          child: Dialog(
+            backgroundColor: Colors.white,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(14),
+            ),
+            child: const Padding(
+              padding: EdgeInsets.symmetric(horizontal: 28, vertical: 22),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  SizedBox(
+                    width: 26,
+                    height: 26,
+                    child: CircularProgressIndicator(strokeWidth: 2.5),
+                  ),
+                  SizedBox(width: 16),
+                  Text(
+                    'Loading products…',
+                    style: TextStyle(
+                      fontWeight: FontWeight.w600,
+                      color: _ink,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        );
+      },
+    );
+    try {
+      final products = await FirestoreDb.instance.fetchAllProducts();
+      if (!mounted) return;
+      Navigator.of(context).pop();
+      if (products.isEmpty) {
+        messenger.showSnackBar(
+          const SnackBar(content: Text('No products to search yet.')),
+        );
+        return;
+      }
+      if (!mounted) return;
+      final selected = await showSearch<Product?>(
+        context: context,
+        delegate: _ProductSearchDelegate(products),
+      );
+      if (!mounted) return;
+      if (selected != null) {
+        Navigator.of(context).push(
+          MaterialPageRoute(
+            builder: (_) => ProductDetailPage(product: selected),
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        Navigator.of(context).pop();
+        messenger.showSnackBar(
+          SnackBar(content: Text('Could not open search: $e')),
+        );
+      }
+    }
+  }
+
   List<Product> _applySubFilter(List<Product> items) {
     // Face top-level tab: filter by subcategory chip.
     if (_category == 'Face') {
@@ -330,7 +597,9 @@ class _HomeFeedState extends State<_HomeFeed> {
           final items = _applySubFilter(rawItems);
           return CustomScrollView(
             slivers: [
-              const SliverToBoxAdapter(child: _HeaderBar()),
+              SliverToBoxAdapter(
+                child: _HeaderBar(onSearchTap: _openProductSearch),
+              ),
               const SliverToBoxAdapter(child: SizedBox(height: 8)),
               if (_category == 'All' && items.isNotEmpty)
                 SliverToBoxAdapter(
@@ -342,10 +611,6 @@ class _HomeFeedState extends State<_HomeFeed> {
                   categories: _categories,
                   active: _category,
                   onChanged: (c) {
-                    if (c == 'Nails') {
-                      showNailTryOnEntry(context);
-                      return;
-                    }
                     setState(() {
                       _category = c;
                       _makeupGroup = _makeupGroups.first;
@@ -499,8 +764,133 @@ class _MakeupDropdownFilters extends StatelessWidget {
   }
 }
 
+class _ProductSearchDelegate extends SearchDelegate<Product?> {
+  _ProductSearchDelegate(this._all);
+  final List<Product> _all;
+
+  @override
+  String get searchFieldLabel => 'Search by name, brand, category…';
+
+  @override
+  ThemeData appBarTheme(BuildContext context) {
+    final base = Theme.of(context);
+    return base.copyWith(
+      appBarTheme: const AppBarTheme(
+        backgroundColor: Colors.white,
+        foregroundColor: _ink,
+        elevation: 0,
+        surfaceTintColor: Colors.transparent,
+      ),
+    );
+  }
+
+  List<Product> _filtered(String q) {
+    final t = q.trim().toLowerCase();
+    if (t.isEmpty) {
+      final sorted = [..._all]..sort((a, b) => a.name.compareTo(b.name));
+      return sorted.take(28).toList();
+    }
+    final out =
+        _all.where((p) {
+          final blob =
+              '${p.name} ${p.brand} ${p.category} ${p.subCategory} ${p.description}'
+                  .toLowerCase();
+          return blob.contains(t);
+        }).toList();
+    out.sort((a, b) => a.name.compareTo(b.name));
+    return out;
+  }
+
+  @override
+  Widget buildLeading(BuildContext context) {
+    return IconButton(
+      icon: const Icon(Icons.arrow_back_rounded),
+      onPressed: () => close(context, null),
+    );
+  }
+
+  @override
+  List<Widget>? buildActions(BuildContext context) {
+    if (query.isEmpty) return null;
+    return [
+      IconButton(
+        icon: const Icon(Icons.clear_rounded),
+        onPressed: () {
+          query = '';
+          showSuggestions(context);
+        },
+      ),
+    ];
+  }
+
+  @override
+  Widget buildResults(BuildContext context) => _buildList(context);
+
+  @override
+  Widget buildSuggestions(BuildContext context) => _buildList(context);
+
+  Widget _buildList(BuildContext context) {
+    final items = _filtered(query);
+    if (items.isEmpty) {
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Text(
+            query.trim().isEmpty
+                ? 'Start typing to find a product.'
+                : 'No products match “$query”.',
+            textAlign: TextAlign.center,
+            style: const TextStyle(color: Colors.black54, fontSize: 16),
+          ),
+        ),
+      );
+    }
+    return ListView.separated(
+      padding: const EdgeInsets.symmetric(vertical: 8),
+      itemCount: items.length,
+      separatorBuilder: (_, __) => const Divider(height: 1),
+      itemBuilder: (context, i) {
+        final p = items[i];
+        return ListTile(
+          contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+          leading: SizedBox(
+            width: 52,
+            height: 52,
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(8),
+              child: _ProductImage(
+                imageUrl: p.imageUrl,
+                imagePath: p.imagePath,
+                fit: BoxFit.contain,
+              ),
+            ),
+          ),
+          title: Text(
+            p.name,
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(fontWeight: FontWeight.w700, color: _ink),
+          ),
+          subtitle: Text(
+            [
+              if (p.brand.trim().isNotEmpty) p.brand,
+              p.category,
+              rs(p.price),
+            ].join(' · '),
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(fontSize: 12, color: Colors.grey.shade700),
+          ),
+          onTap: () => close(context, p),
+        );
+      },
+    );
+  }
+}
+
 class _HeaderBar extends StatelessWidget {
-  const _HeaderBar();
+  const _HeaderBar({this.onSearchTap});
+  final VoidCallback? onSearchTap;
   @override
   Widget build(BuildContext context) {
     return Padding(
@@ -509,10 +899,14 @@ class _HeaderBar extends StatelessWidget {
         height: 44,
         child: Stack(alignment: Alignment.center, children: [
           Align(
-              alignment: Alignment.centerLeft,
-              child: IconButton(
-                  icon: const Icon(Icons.menu_rounded, color: _ink),
-                  onPressed: () {})),
+            alignment: Alignment.centerLeft,
+            child: IconButton(
+              tooltip: 'Menu',
+              icon: const Icon(Icons.menu_rounded, color: _ink),
+              onPressed: () =>
+                  Scaffold.maybeOf(context)?.openDrawer(),
+            ),
+          ),
           Center(
             child: StreamBuilder<User?>(
               stream: FirebaseAuth.instance.authStateChanges(),
@@ -546,10 +940,75 @@ class _HeaderBar extends StatelessWidget {
             ),
           ),
           Align(
-              alignment: Alignment.centerRight,
-              child: IconButton(
+            alignment: Alignment.centerRight,
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                IconButton(
+                  tooltip: 'Search products',
                   icon: const Icon(Icons.search_rounded, color: _ink),
-                  onPressed: () {})),
+                  onPressed: onSearchTap,
+                ),
+                StreamBuilder<User?>(
+                  stream: FirebaseAuth.instance.authStateChanges(),
+                  builder: (context, authSnap) {
+                    final u = authSnap.data;
+                    if (u == null) {
+                      return IconButton(
+                        tooltip: 'Chat with admin',
+                        icon: const Icon(Icons.message_outlined, color: _ink),
+                        onPressed: () {
+                          Navigator.of(context).push(
+                            MaterialPageRoute(
+                              builder: (_) => const SupportChatScreen(),
+                            ),
+                          );
+                        },
+                      );
+                    }
+                    return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+                      stream: FirebaseFirestore.instance
+                          .collection('support_chats')
+                          .doc(u.uid)
+                          .snapshots(),
+                      builder: (context, chatSnap) {
+                        final unread = chatSnap.data?.data()?['unreadForUser'] == true;
+                        return IconButton(
+                          tooltip: 'Chat with admin',
+                          onPressed: () {
+                            Navigator.of(context).push(
+                              MaterialPageRoute(
+                                builder: (_) => const SupportChatScreen(),
+                              ),
+                            );
+                          },
+                          icon: Stack(
+                            clipBehavior: Clip.none,
+                            children: [
+                              const Icon(Icons.message_outlined, color: _ink),
+                              if (unread)
+                                Positioned(
+                                  right: -1,
+                                  top: -1,
+                                  child: Container(
+                                    width: 9,
+                                    height: 9,
+                                    decoration: BoxDecoration(
+                                      color: const Color(0xFFCC1F1A),
+                                      borderRadius: BorderRadius.circular(99),
+                                    ),
+                                  ),
+                                ),
+                            ],
+                          ),
+                        );
+                      },
+                    );
+                  },
+                ),
+              ],
+            ),
+          ),
         ]),
       ),
     );
@@ -899,12 +1358,6 @@ class _HairFeatureTiles extends StatelessWidget {
   Widget build(BuildContext context) {
     const chips = [
       _HairChipData(
-        emoji: '🎨',
-        title: 'Colour Match',
-        gradient: [Color(0xFF7C150D), Color(0xFFB84A4A)],
-        screen: 'colour',
-      ),
-      _HairChipData(
         emoji: '💇',
         title: 'Style Match',
         gradient: [Color(0xFF1A237E), Color(0xFF3949AB)],
@@ -917,14 +1370,18 @@ class _HairFeatureTiles extends StatelessWidget {
         screen: 'mens',
       ),
     ];
-    return SizedBox(
-      height: 44,
-      child: ListView.separated(
-        scrollDirection: Axis.horizontal,
-        padding: const EdgeInsets.symmetric(horizontal: 16),
-        itemCount: chips.length,
-        separatorBuilder: (_, __) => const SizedBox(width: 10),
-        itemBuilder: (context, i) => _HairChip(data: chips[i]),
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16),
+      child: Center(
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            _HairChip(data: chips[0]),
+            const SizedBox(width: 12),
+            _HairChip(data: chips[1]),
+          ],
+        ),
       ),
     );
   }
@@ -951,10 +1408,6 @@ class _HairChip extends StatelessWidget {
       borderRadius: BorderRadius.circular(22),
       onTap: () {
         switch (data.screen) {
-          case 'colour':
-            Navigator.push(context, MaterialPageRoute(
-                builder: (_) => const HairColorTryOnScreen()));
-            break;
           case 'style':
             Navigator.push(context, MaterialPageRoute(
                 builder: (_) => const HairStyleMatcherScreen()));

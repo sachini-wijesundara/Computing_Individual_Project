@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import 'ai_beauty_assistant_screen.dart';
-import 'enhanced_ai_assistant_screen.dart';
+import 'enhanced_ai_assistant_entry.dart';
 
 // AI Beauty Assistant Page
 class AIBeautyAssistantPage extends StatelessWidget {

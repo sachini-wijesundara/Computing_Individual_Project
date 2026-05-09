@@ -9,6 +9,8 @@ class AIChatConfig {
   // Real device: use your Mac's IP e.g. http://192.168.1.100:5000
   static const String baseUrl = 'http://localhost:5000';
   static const int timeoutSeconds = 30;
+  /// Fast fail when Flask isn’t running (avoids long hangs on connection refused).
+  static const int healthCheckSeconds = 4;
 }
 
 class SkinAnalysisResult {
@@ -111,7 +113,7 @@ class AIChatService {
         return response.data;
       }
     } catch (e) {
-      debugPrint('Remote skin analysis error: $e');
+      _logRemoteError('skin', e);
     }
     return null;
   }
@@ -127,9 +129,24 @@ class AIChatService {
         return response.data;
       }
     } catch (e) {
-      debugPrint('Remote hair analysis error: $e');
+      _logRemoteError('hair', e);
     }
     return null;
+  }
+
+  void _logRemoteError(String kind, Object e) {
+    final msg = e.toString().toLowerCase();
+    if (e is DioException &&
+        (e.type == DioExceptionType.connectionError ||
+            e.type == DioExceptionType.connectionTimeout ||
+            msg.contains('connection refused') ||
+            msg.contains('socketexception'))) {
+      debugPrint(
+        'Beauty API ($kind) offline at ${AIChatConfig.baseUrl} — using on-device / Gemini fallback.',
+      );
+      return;
+    }
+    debugPrint('Remote $kind analysis error: $e');
   }
 
   bool _serverAvailable = false;
@@ -137,15 +154,19 @@ class AIChatService {
 
   /// Check if the Python API server is running
   Future<bool> isServerAvailable() async {
-    // Cache health check for 30 seconds
+    // Short cache so a stopped server is not assumed "up" for long.
     if (_lastHealthCheck != null &&
-        DateTime.now().difference(_lastHealthCheck!).inSeconds < 30) {
+        DateTime.now().difference(_lastHealthCheck!).inSeconds < 8) {
       return _serverAvailable;
     }
     try {
+      final quick = Duration(seconds: AIChatConfig.healthCheckSeconds);
       final resp = await _dio.get(
         '/health',
-        options: Options(sendTimeout: const Duration(seconds: 5)),
+        options: Options(
+          sendTimeout: quick,
+          receiveTimeout: quick,
+        ),
       );
       _serverAvailable = resp.statusCode == 200;
     } catch (_) {

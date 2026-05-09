@@ -795,7 +795,7 @@ private class NativeLipRendererView: NSObject, FlutterPlatformView, FlutterStrea
   private var currentNailArtStyle: Int = 0
   private var currentNailShape: Int = 0
   private var currentShade: UIColor = .red
-  private var currentIntensity: CGFloat = 0.7
+  private var currentIntensity: CGFloat = 0.4
   private var currentSplitPosition: CGFloat = 0.5
   private var isCompareMode: Bool = false
   private var currentCategory: String = "Lip Sticks"

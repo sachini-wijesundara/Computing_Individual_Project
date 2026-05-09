@@ -39,8 +39,8 @@ class GeminiChatService {
   // Ordered list of models to try — stops at first success.
   static const _models = [
     'gemini-2.5-flash',
+    'gemini-1.5-flash',
     'gemini-1.5-pro',
-    'gemini-1.0-pro',
   ];
   String _activeModel = _models[0];
 
@@ -129,7 +129,7 @@ button to get a personalised analysis, and answer general beauty questions in th
       _initChat();
       try {
         final response = await _chat!.sendMessage(Content.text(message))
-            .timeout(const Duration(seconds: 20));
+            .timeout(const Duration(seconds: 45));
         final text = response.text;
         if (text != null && text.isNotEmpty) {
           debugPrint('✅ Gemini replied using model: $model');

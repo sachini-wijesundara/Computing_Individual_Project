@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import 'full_makeup_screen.dart';
-import 'nail_tryon_landing.dart';
+import 'hair_color_tryon_screen.dart';
 
 // ── Brand colours ──────────────────────────────────────────────────────────────
 const _maroon  = Color(0xFF7C150D);
@@ -71,7 +71,7 @@ class VirtualTryOnLandingPage extends StatelessWidget {
               const Padding(
                 padding: EdgeInsets.symmetric(horizontal: 40),
                 child: Text(
-                  'Try on any product instantly with our AI-powered camera.',
+                  'Try makeup live or on a photo, or preview hair colours with our AI camera.',
                   textAlign: TextAlign.center,
                   style: TextStyle(fontSize: 13, color: _maroon, height: 1.5),
                 ),
@@ -83,7 +83,7 @@ class VirtualTryOnLandingPage extends StatelessWidget {
                 padding: const EdgeInsets.symmetric(horizontal: 32),
                 child: Column(
                   children: [
-                    // Live Try-ON
+                    // Makeup — live camera
                     SizedBox(
                       width: double.infinity,
                       height: 52,
@@ -105,18 +105,18 @@ class VirtualTryOnLandingPage extends StatelessWidget {
                         child: const Row(
                           mainAxisAlignment: MainAxisAlignment.center,
                           children: [
-                            Icon(Icons.camera_alt_rounded, size: 20),
+                            Icon(Icons.face_retouching_natural_rounded, size: 20),
                             SizedBox(width: 8),
-                            Text('Live Try-ON',
+                            Text('Makeup — Live try-on',
                                 style: TextStyle(
-                                    fontSize: 16, fontWeight: FontWeight.w800)),
+                                    fontSize: 15, fontWeight: FontWeight.w800)),
                           ],
                         ),
                       ),
                     ),
                     const SizedBox(height: 14),
 
-                    // Upload Photo
+                    // Makeup — upload photo
                     SizedBox(
                       width: double.infinity,
                       height: 52,
@@ -139,25 +139,29 @@ class VirtualTryOnLandingPage extends StatelessWidget {
                           children: [
                             Icon(Icons.photo_library_outlined, size: 20),
                             SizedBox(width: 8),
-                            Text('Upload Photo',
+                            Text('Makeup — Upload photo',
                                 style: TextStyle(
-                                    fontSize: 16, fontWeight: FontWeight.w700)),
+                                    fontSize: 15, fontWeight: FontWeight.w700)),
                           ],
                         ),
                       ),
                     ),
                     const SizedBox(height: 14),
 
-                    // Nail try-on (hand photo or live camera)
+                    // Hair colour try-on
                     SizedBox(
                       width: double.infinity,
                       height: 52,
                       child: OutlinedButton(
-                        onPressed: () => showNailTryOnEntry(context),
+                        onPressed: () => Navigator.of(context).push(
+                          MaterialPageRoute(
+                            builder: (_) => const HairColorTryOnScreen(),
+                          ),
+                        ),
                         style: OutlinedButton.styleFrom(
                           foregroundColor: _maroon,
-                          side: BorderSide(color: _maroon.withValues(alpha: 0.85), width: 1.8),
-                          backgroundColor: Colors.white.withValues(alpha: 0.4),
+                          side: const BorderSide(color: _maroon, width: 1.8),
+                          backgroundColor: Colors.white.withValues(alpha: 0.75),
                           shape: RoundedRectangleBorder(
                             borderRadius: BorderRadius.circular(28),
                           ),
@@ -165,11 +169,11 @@ class VirtualTryOnLandingPage extends StatelessWidget {
                         child: const Row(
                           mainAxisAlignment: MainAxisAlignment.center,
                           children: [
-                            Icon(Icons.auto_awesome_outlined, size: 20),
+                            Icon(Icons.brush_rounded, size: 20),
                             SizedBox(width: 8),
-                            Text('Nail try-on',
+                            Text('Hair color try-on',
                                 style: TextStyle(
-                                    fontSize: 16, fontWeight: FontWeight.w700)),
+                                    fontSize: 15, fontWeight: FontWeight.w800)),
                           ],
                         ),
                       ),

@@ -1,5 +1,6 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import '../models/product.dart';
+import '../models/product_review.dart';
 
 /// Singleton Firestore service.
 /// Usage: `FirestoreDb.instance.productsByCategory('Lip Sticks')`
@@ -25,7 +26,65 @@ class FirestoreDb {
     );
   }
 
+  /// One-off fetch of every product (e.g. in-app search).
+  Future<List<Product>> fetchAllProducts() async {
+    final snap = await _db.collection('products').get();
+    return snap.docs.map((doc) => Product.fromFirestore(doc)).toList();
+  }
+
   /// Fetch a single product by its document ID (one-off, not a stream).
+  CollectionReference<Map<String, dynamic>> _productReviewsRef() {
+    return _db.collection('product_reviews');
+  }
+
+  /// Live list of customer reviews (newest first).
+  Stream<List<ProductReview>> productReviewsStream(String productId) {
+    return _productReviewsRef()
+        .where('productId', isEqualTo: productId)
+        .snapshots()
+        .map((snap) {
+          final reviews = snap.docs.map(ProductReview.fromFirestore).toList();
+          reviews.sort((a, b) {
+            final am = (a.createdAt ?? a.updatedAt)?.millisecondsSinceEpoch ?? 0;
+            final bm = (b.createdAt ?? b.updatedAt)?.millisecondsSinceEpoch ?? 0;
+            return bm.compareTo(am);
+          });
+          return reviews;
+        });
+  }
+
+  /// One review per user per product (document id = [uid]).
+  Future<void> upsertProductReview({
+    required String productId,
+    required String uid,
+    required int rating,
+    String? comment,
+    String? userDisplayName,
+  }) async {
+    if (productId.isEmpty || uid.isEmpty) {
+      throw ArgumentError('Review requires a product id and signed-in user.');
+    }
+    final reviewId = '${productId}_$uid';
+    final ref = _productReviewsRef().doc(reviewId);
+    final int stars = rating < 1 ? 1 : (rating > 5 ? 5 : rating);
+    final name = (userDisplayName ?? '').trim();
+    final body = (comment ?? '').trim();
+
+    final snap = await ref.get();
+    final data = <String, dynamic>{
+      'productId': productId,
+      'userId': uid,
+      'rating': stars,
+      'comment': body,
+      'userDisplayName': name.isNotEmpty ? name : 'Customer',
+      'updatedAt': FieldValue.serverTimestamp(),
+    };
+    if (!snap.exists) {
+      data['createdAt'] = FieldValue.serverTimestamp();
+    }
+    await ref.set(data, SetOptions(merge: true));
+  }
+
   Future<Product?> getProduct(String id) async {
     try {
       final doc = await _db.collection('products').doc(id).get();

@@ -40,6 +40,7 @@ dependencies:
   google_sign_in: ^6.2.2
   camera_android: ^0.10.10+6
   gal: ^2.3.2
+  url_launcher: ^6.3.2
 
 dev_dependencies:
   flutter_test:
@@ -65,8 +66,6 @@ flutter:
   - assets/models/undertone_classifier_labels.json
   - assets/models/makeup_detector.tflite
   - assets/models/makeup_detector_labels.json
-  - assets/models/nail_segmentation.tflite
-  - assets/models/nail_segmentation_labels.json
   - assets/icons/google.png
   - assets/icons/ai.png
   - assets/masks/lip_oval.png

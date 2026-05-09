@@ -76,13 +76,15 @@ class TFLiteAnalysisService {
 
   final _aiChatService = AIChatService();
 
-  // Models to try for vision analysis
+  /// Models that work for new Google AI Studio keys (avoid `gemini-2.0-flash` / `gemini-1.0-pro-vision`).
   static const _visionModels = [
     'gemini-2.5-flash',
-    'gemini-1.5-pro',
     'gemini-1.5-flash',
-    'gemini-1.0-pro-vision',
+    'gemini-1.5-pro',
   ];
+
+  static const Duration _visionTimeout = Duration(seconds: 70);
+  static const int _visionMaxSidePx = 1024;
 
   // On-device TFLite interpreters
   Interpreter? _hairTypeInterpreter;
@@ -173,11 +175,96 @@ class TFLiteAnalysisService {
   }
 
   // ── ON-DEVICE TFLite — hair type + color classification ───────────────────
+
+  /// Quantized MobileNet-style models use `uint8` [0–255]; float models use normalized floats.
+  dynamic _hairClassifierInput(img.Image resized, TensorType inputType) {
+    if (inputType == TensorType.uint8) {
+      return List.generate(
+        1,
+        (_) => List.generate(
+          224,
+          (y) => List.generate(
+            224,
+            (x) {
+              final p = resized.getPixel(x, y);
+              return [
+                p.r.toInt().clamp(0, 255),
+                p.g.toInt().clamp(0, 255),
+                p.b.toInt().clamp(0, 255),
+              ];
+            },
+          ),
+        ),
+      );
+    }
+    return List.generate(
+      1,
+      (_) => List.generate(
+        224,
+        (y) => List.generate(
+          224,
+          (x) {
+            final p = resized.getPixel(x, y);
+            return [p.r / 255.0, p.g / 255.0, p.b / 255.0];
+          },
+        ),
+      ),
+    );
+  }
+
+  /// Logits length for typical `[batch, classes]` or `[classes]` outputs.
+  static int _logitsLengthFromShape(List<int> shape) {
+    if (shape.isEmpty) return 0;
+    if (shape.length == 1) return shape[0];
+    return shape[1];
+  }
+
+  List<dynamic> _allocOutputForTensor(Tensor tensor) {
+    final n = _logitsLengthFromShape(tensor.shape);
+    final t = tensor.type;
+    if (t == TensorType.float32 || t == TensorType.float16 || t == TensorType.float64) {
+      return [List<double>.filled(n, 0.0)];
+    }
+    return [List<int>.filled(n, 0)];
+  }
+
+  List<double> _scoresFromOutput(List<dynamic> outputBuf, int length) {
+    final row = outputBuf[0];
+    if (row is List<double>) {
+      return row;
+    }
+    if (row is List<int>) {
+      return List<double>.generate(length, (i) => row[i].toDouble());
+    }
+    return List<double>.generate(length, (i) => (row[i] as num).toDouble());
+  }
+
   Future<Map<String, dynamic>?> _tfliteAnalyzeHair(File imageFile) async {
     if (!_tfliteReady || _hairTypeInterpreter == null || _hairColorInterpreter == null) {
       return null;
     }
     try {
+      final typeOutTensor = _hairTypeInterpreter!.getOutputTensor(0);
+      final colorOutTensor = _hairColorInterpreter!.getOutputTensor(0);
+      final typeN = _logitsLengthFromShape(typeOutTensor.shape);
+      final colorN = _logitsLengthFromShape(colorOutTensor.shape);
+
+      if (typeN != _hairTypeLabels.length) {
+        debugPrint(
+          '⚠️ hair_type_classifier.tflite outputs $typeN classes (shape ${typeOutTensor.shape}) but '
+          'labels.json has ${_hairTypeLabels.length}. Replace the .tflite with a ${_hairTypeLabels.length}-class '
+          'hair-type model (not ImageNet/MobileNet 1001). Using Gemini/pixel fallback.',
+        );
+        return null;
+      }
+      if (colorN != _hairColorLabels.length) {
+        debugPrint(
+          '⚠️ hair_color_classifier.tflite outputs $colorN classes (shape ${colorOutTensor.shape}) but '
+          'labels have ${_hairColorLabels.length}. Using Gemini/pixel fallback.',
+        );
+        return null;
+      }
+
       final bytes   = await imageFile.readAsBytes();
       final decoded = img.decodeImage(bytes);
       if (decoded == null) return null;
@@ -185,29 +272,18 @@ class TFLiteAnalysisService {
       // Resize to 224×224 (MobileNet input size)
       final resized = img.copyResize(decoded, width: 224, height: 224);
 
-      // Build normalized float32 input [1, 224, 224, 3]
-      final input = List.generate(
-        1, (_) => List.generate(
-          224, (y) => List.generate(
-            224, (x) {
-              final p = resized.getPixel(x, y);
-              return [p.r / 255.0, p.g / 255.0, p.b / 255.0];
-            },
-          ),
-        ),
-      );
+      final inputType = _hairTypeInterpreter!.getInputTensor(0).type;
+      final input = _hairClassifierInput(resized, inputType);
 
-      // Run hair type classifier
-      final typeOutput = [List<double>.filled(_hairTypeLabels.length, 0.0)];
+      final typeOutput = _allocOutputForTensor(typeOutTensor);
       _hairTypeInterpreter!.run(input, typeOutput);
-      final typeScores = typeOutput[0];
+      final typeScores = _scoresFromOutput(typeOutput, typeN);
       final typeIdx    = typeScores.indexOf(typeScores.reduce(math.max));
       final hairType   = typeIdx < _hairTypeLabels.length ? _hairTypeLabels[typeIdx] : 'Wavy';
 
-      // Run hair color classifier
-      final colorOutput = [List<double>.filled(_hairColorLabels.length, 0.0)];
+      final colorOutput = _allocOutputForTensor(colorOutTensor);
       _hairColorInterpreter!.run(input, colorOutput);
-      final colorScores = colorOutput[0];
+      final colorScores = _scoresFromOutput(colorOutput, colorN);
       final colorIdx    = colorScores.indexOf(colorScores.reduce(math.max));
       final hairColor   = colorIdx < _hairColorLabels.length ? _hairColorLabels[colorIdx] : 'Brown';
 
@@ -228,6 +304,28 @@ class TFLiteAnalysisService {
 
   // ── GEMINI VISION — calls Gemini with the actual image ────────────────────
 
+  /// Downscale camera photos so Gemini Vision returns within timeout (large JPEGs are slow).
+  Future<Uint8List> _imageBytesForVision(File imageFile) async {
+    final raw = await imageFile.readAsBytes();
+    try {
+      final decoded = img.decodeImage(raw);
+      if (decoded == null) return raw;
+      img.Image resized = decoded;
+      final w = decoded.width;
+      final h = decoded.height;
+      final m = _visionMaxSidePx;
+      if (w > m || h > m) {
+        resized = w >= h
+            ? img.copyResize(decoded, width: m)
+            : img.copyResize(decoded, height: m);
+      }
+      return Uint8List.fromList(img.encodeJpg(resized, quality: 88));
+    } catch (e) {
+      debugPrint('⚠️ Vision image resize skipped: $e');
+      return raw;
+    }
+  }
+
   Future<Map<String, dynamic>?> _geminiVisionAnalyze(File imageFile) async {
     if (AppSecrets.geminiApiKey.isEmpty) {
       debugPrint('⚠️ GEMINI_API_KEY missing — skipping Gemini Vision (use .env or --dart-define)');
@@ -240,10 +338,8 @@ class TFLiteAnalysisService {
       return _visionCache;
     }
 
-    final imageBytes = await imageFile.readAsBytes();
-    final mimeType = imageFile.path.toLowerCase().endsWith('.png')
-        ? 'image/png'
-        : 'image/jpeg';
+    final imageBytes = await _imageBytesForVision(imageFile);
+    const mimeType = 'image/jpeg';
 
     final skinPrompt = '''
 Analyze this photo and determine:
@@ -275,8 +371,7 @@ Reply ONLY in valid JSON:
             DataPart(mimeType, imageBytes),
           ])
         ];
-        final response = await model.generateContent(content)
-            .timeout(const Duration(seconds: 25));
+        final response = await model.generateContent(content).timeout(_visionTimeout);
         final text = response.text ?? '';
         debugPrint('Gemini Vision [$modelName] raw: $text');
 
@@ -444,18 +539,20 @@ Reply ONLY in valid JSON:
       );
     }
 
-    // 2) Remote server (TFLite API — usually offline during dev)
+    // 2) Remote server (Flask — only if /health succeeds; avoids connection refused noise)
     try {
-      final apiResult = await _aiChatService.analyzeSkinRemote(imageFile);
-      if (apiResult != null) {
-        final s = apiResult['skin_tone'] ?? 'Medium';
-        final u = apiResult['undertone'] ?? 'Neutral';
-        return SkinToneResult(
-          skinTone: s, undertone: u,
-          confidence: (apiResult['confidence'] as num?)?.toDouble() ?? 0.90,
-          inferenceMode: 'server',
-          makeupRecommendations: _skinMakeupRecs(s, u),
-        );
+      if (await _aiChatService.isServerAvailable()) {
+        final apiResult = await _aiChatService.analyzeSkinRemote(imageFile);
+        if (apiResult != null) {
+          final s = apiResult['skin_tone'] ?? 'Medium';
+          final u = apiResult['undertone'] ?? 'Neutral';
+          return SkinToneResult(
+            skinTone: s, undertone: u,
+            confidence: (apiResult['confidence'] as num?)?.toDouble() ?? 0.90,
+            inferenceMode: 'server',
+            makeupRecommendations: _skinMakeupRecs(s, u),
+          );
+        }
       }
     } catch (e) { /* fall through */ }
 
@@ -502,20 +599,22 @@ Reply ONLY in valid JSON:
       );
     }
 
-    // 3) Remote server (Python API — usually offline during dev)
+    // 3) Remote server (Flask — only if /health succeeds)
     try {
-      final apiResult = await _aiChatService.analyzeHairRemote(imageFile);
-      if (apiResult != null) {
-        final t = apiResult['hair_type'] ?? 'Wavy';
-        final c = apiResult['hair_color'] ?? 'Brown';
-        return HairResult(
-          hairType: t, hairColor: c,
-          confidence: (apiResult['confidence'] as num?)?.toDouble() ?? 0.90,
-          inferenceMode: 'server',
-          careTips: _hairCareTips(t),
-          productRecommendations: _hairProductRecs(t, c),
-          recommendedStyles: [],
-        );
+      if (await _aiChatService.isServerAvailable()) {
+        final apiResult = await _aiChatService.analyzeHairRemote(imageFile);
+        if (apiResult != null) {
+          final t = apiResult['hair_type'] ?? 'Wavy';
+          final c = apiResult['hair_color'] ?? 'Brown';
+          return HairResult(
+            hairType: t, hairColor: c,
+            confidence: (apiResult['confidence'] as num?)?.toDouble() ?? 0.90,
+            inferenceMode: 'server',
+            careTips: _hairCareTips(t),
+            productRecommendations: _hairProductRecs(t, c),
+            recommendedStyles: [],
+          );
+        }
       }
     } catch (e) { /* fall through */ }
 

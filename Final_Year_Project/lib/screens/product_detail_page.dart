@@ -6,9 +6,9 @@ import 'package:provider/provider.dart';
 import '../providers/cart_provider.dart';
 
 import '../models/product.dart';
+import '../models/product_review.dart';
 import '../services/firestore_service.dart';
 import 'live_tryon_screen.dart';
-import 'hair_color_tryon_screen.dart';
 import 'cart_screen.dart';
 
 // ── Colour constants (same palette as dashboard) ──────────────────────────────
@@ -40,15 +40,174 @@ class _ProductDetailPageState extends State<ProductDetailPage> {
   bool _addedToCart = false;
   List<Map<String, String>> _detailShades = const [];
   int _selectedShadeIndex = 0;
+  late final Stream<List<ProductReview>> _reviewsStream;
 
   Product get p => widget.product;
 
   @override
   void initState() {
     super.initState();
+    _reviewsStream = FirestoreDb.instance.productReviewsStream(p.id);
     _detailShades = _normalizeShades(p.shades);
     _seedSelectedShade();
     _refreshShadesFromFirestore();
+  }
+
+  String _formatReviewDate(DateTime? t) {
+    if (t == null) return '';
+    return '${t.year}-${t.month.toString().padLeft(2, '0')}-${t.day.toString().padLeft(2, '0')}';
+  }
+
+  Future<void> _openReviewSheet() async {
+    final auth = FirebaseAuth.instance;
+    final user = auth.currentUser;
+    if (user == null) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Sign in to write a review.'),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+      return;
+    }
+
+    var draftRating = 5;
+    final commentCtrl = TextEditingController();
+    final name = user.displayName?.trim().isNotEmpty == true
+        ? user.displayName!.trim()
+        : (user.email != null && user.email!.contains('@'))
+            ? user.email!.split('@').first
+            : 'Customer';
+
+    final submitted = await showModalBottomSheet<bool>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.white,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
+      builder: (ctx) {
+        return Padding(
+          padding: EdgeInsets.only(
+            left: 20,
+            right: 20,
+            top: 16,
+            bottom: MediaQuery.of(ctx).viewInsets.bottom + 20,
+          ),
+          child: StatefulBuilder(
+            builder: (ctx, setModal) {
+              return Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Row(
+                    children: [
+                      const Text(
+                        'Write a review',
+                        style: TextStyle(
+                          fontSize: 18,
+                          fontWeight: FontWeight.w800,
+                          color: _ink,
+                        ),
+                      ),
+                      const Spacer(),
+                      IconButton(
+                        onPressed: () => Navigator.pop(ctx, false),
+                        icon: const Icon(Icons.close_rounded, color: _muted),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  const Text('Your rating', style: TextStyle(color: _muted, fontSize: 13)),
+                  const SizedBox(height: 6),
+                  Row(
+                    children: List.generate(5, (i) {
+                      final filled = i < draftRating;
+                      return IconButton(
+                        onPressed: () => setModal(() => draftRating = i + 1),
+                        icon: Icon(
+                          filled ? Icons.star_rounded : Icons.star_border_rounded,
+                          color: filled ? Colors.red : _muted,
+                          size: 32,
+                        ),
+                      );
+                    }),
+                  ),
+                  TextField(
+                    controller: commentCtrl,
+                    maxLines: 4,
+                    maxLength: 2000,
+                    decoration: const InputDecoration(
+                      alignLabelWithHint: true,
+                      labelText: 'Comment (optional)',
+                      border: OutlineInputBorder(),
+                      focusedBorder: OutlineInputBorder(
+                        borderSide: BorderSide(color: _maroon, width: 1.5),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  ElevatedButton(
+                    onPressed: () => Navigator.pop(ctx, true),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: _ink,
+                      foregroundColor: Colors.white,
+                      padding: const EdgeInsets.symmetric(vertical: 14),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(10),
+                      ),
+                    ),
+                    child: const Text('Submit', style: TextStyle(fontWeight: FontWeight.w800)),
+                  ),
+                ],
+              );
+            },
+          ),
+        );
+      },
+    );
+
+    if (submitted != true || !mounted) return;
+
+    try {
+      await FirestoreDb.instance.upsertProductReview(
+        productId: p.id,
+        uid: user.uid,
+        rating: draftRating,
+        comment: commentCtrl.text,
+        userDisplayName: name,
+      );
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Thanks — your review was saved.'),
+          backgroundColor: Color(0xFF1F8A43),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    } on FirebaseException catch (e) {
+      if (!mounted) return;
+      final hint = e.code == 'permission-denied'
+          ? ' Check Firestore rules are deployed (firebase deploy --only firestore:rules).'
+          : '';
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Could not save review (${e.code}): ${e.message}$hint'),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Could not save review: $e'),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    } finally {
+      commentCtrl.dispose();
+    }
   }
 
   // Parse hex colour from Firestore (e.g. '#C0392B' or 'C0392B')
@@ -148,7 +307,7 @@ class _ProductDetailPageState extends State<ProductDetailPage> {
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text('${p.name} added to cart!'),
-        backgroundColor: _maroon,
+        backgroundColor: const Color(0xFF1F8A43),
         duration: const Duration(seconds: 1),
         behavior: SnackBarBehavior.floating,
       ),
@@ -248,7 +407,21 @@ class _ProductDetailPageState extends State<ProductDetailPage> {
           ),
         ],
       ),
-      body: ListView(
+      body: StreamBuilder<List<ProductReview>>(
+        stream: _reviewsStream,
+        builder: (context, snap) {
+          final reviews = snap.data ?? const <ProductReview>[];
+          final hasLive = reviews.isNotEmpty;
+          final avg = hasLive
+              ? reviews.fold<int>(0, (s, r) => s + r.rating) / reviews.length
+              : p.rating;
+          final summaryCount =
+              hasLive ? reviews.length : p.reviews;
+          final summarySuffix = hasLive
+              ? ' customer review${reviews.length == 1 ? '' : 's'}'
+              : ' reviews · add yours below';
+
+          return ListView(
         padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
         children: [
           // ── Product image ─────────────────────────────────────────────────
@@ -293,14 +466,17 @@ class _ProductDetailPageState extends State<ProductDetailPage> {
           ],
           const SizedBox(height: 10),
 
-          // ── Rating row ────────────────────────────────────────────────────
+          // ── Rating row (live customer reviews + catalog fallback) ─────────
           Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              ...List.generate(5, (i) => _star(p.rating, i)),
+              ...List.generate(5, (i) => _star(avg, i)),
               const SizedBox(width: 8),
-              Text(
-                '${p.rating.toStringAsFixed(1)} (${p.reviews} reviews)',
-                style: const TextStyle(fontSize: 13, color: _ink),
+              Expanded(
+                child: Text(
+                  '${avg.toStringAsFixed(1)} ($summaryCount$summarySuffix)',
+                  style: const TextStyle(fontSize: 13, color: _ink),
+                ),
               ),
             ],
           ),
@@ -496,8 +672,106 @@ class _ProductDetailPageState extends State<ProductDetailPage> {
               ),
             ],
           ),
-          const SizedBox(height: 32),
+          const SizedBox(height: 28),
+
+          // ── Customer reviews ────────────────────────────────────────────
+          Row(
+            children: [
+              const Text(
+                'Customer reviews',
+                style: TextStyle(
+                  fontWeight: FontWeight.w700,
+                  color: _ink,
+                  fontSize: 16,
+                ),
+              ),
+              const Spacer(),
+              TextButton.icon(
+                onPressed: _openReviewSheet,
+                icon: const Icon(Icons.rate_review_outlined, size: 20, color: _maroon),
+                label: const Text(
+                  'Write a review',
+                  style: TextStyle(
+                    color: _maroon,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          if (snap.hasError)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 12),
+              child: Text(
+                'Could not load reviews.',
+                style: TextStyle(color: Colors.red.shade800, fontSize: 13),
+              ),
+            ),
+          if (reviews.isEmpty && snap.connectionState != ConnectionState.waiting)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: Text(
+                'No customer reviews yet. Share your experience with this product.',
+                style: TextStyle(color: _muted, fontSize: 14, height: 1.4),
+              ),
+            ),
+          ...reviews.map((r) {
+            return Padding(
+              padding: const EdgeInsets.only(bottom: 14),
+              child: DecoratedBox(
+                decoration: BoxDecoration(
+                  color: const Color(0xFFF7F7F7),
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: Colors.black12),
+                ),
+                child: Padding(
+                  padding: const EdgeInsets.all(14),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          Expanded(
+                            child: Text(
+                              r.userDisplayName,
+                              style: const TextStyle(
+                                fontWeight: FontWeight.w700,
+                                color: _ink,
+                                fontSize: 14,
+                              ),
+                            ),
+                          ),
+                          Text(
+                            _formatReviewDate(r.createdAt ?? r.updatedAt),
+                            style: const TextStyle(fontSize: 12, color: _muted),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 6),
+                      Row(
+                        children: List.generate(5, (i) => _star(r.rating.toDouble(), i)),
+                      ),
+                      if (r.comment.isNotEmpty) ...[
+                        const SizedBox(height: 8),
+                        Text(
+                          r.comment,
+                          style: const TextStyle(
+                            color: _ink,
+                            fontSize: 14,
+                            height: 1.45,
+                          ),
+                        ),
+                      ],
+                    ],
+                  ),
+                ),
+              ),
+            );
+          }),
+          const SizedBox(height: 24),
         ],
+          );
+        },
       ),
     );
   }

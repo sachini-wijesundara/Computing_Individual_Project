@@ -8,6 +8,7 @@ import '../native_lip_renderer.dart';
 import '../models/product.dart';
 import '../widgets/live_tryon_widgets.dart';
 import '../services/firestore_service.dart';
+import '../services/tryon_activity_service.dart';
 import '../services/simple_lip_detector.dart';
 import '../widgets/realistic_lipstick_painter.dart';
 
@@ -77,7 +78,7 @@ class _LiveTryOnScreenState extends State<LiveTryOnScreen> {
   List<CameraDescription>? _cameras;
   bool _isInitialized = false;
   bool _isProcessing = false;
-  double _intensity = 0.7;
+  double _intensity = 0.4;
   int _frames = 0;
   int _detections = 0;
   double _fps = 0.0;
@@ -111,6 +112,13 @@ class _LiveTryOnScreenState extends State<LiveTryOnScreen> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      TryOnActivityService.start(
+        productId: (widget.productId ?? '').trim(),
+        productName: (widget.productName ?? 'Live try-on').trim(),
+        productCategory: widget.productCategory,
+      );
+    });
     _loadShadesFromFirestore();
     // Debug: Show which renderer is being used
     debugPrint('🎯 Native Renderer Enabled: $_shouldUseNativeRenderer');
@@ -188,6 +196,11 @@ class _LiveTryOnScreenState extends State<LiveTryOnScreen> {
     setState(() {
       _activeProduct = product;
     });
+    TryOnActivityService.updateProduct(
+      productId: product.id,
+      productName: product.name,
+      productCategory: product.category,
+    );
     // Re-apply once product subCategory is available (blush/highlighter/concealer).
     _applyNativeEffect();
   }
@@ -429,6 +442,7 @@ class _LiveTryOnScreenState extends State<LiveTryOnScreen> {
 
   @override
   void dispose() {
+    TryOnActivityService.stop();
     _controller?.dispose();
     _nativeController?.dispose();
     _mlDetector.dispose();
@@ -549,7 +563,11 @@ class _LiveTryOnScreenState extends State<LiveTryOnScreen> {
     if (!mounted) return;
     setState(() => _addingToCart = false);
     ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('${product.name} added to cart')),
+      SnackBar(
+        content: Text('${product.name} added to cart'),
+        backgroundColor: const Color(0xFF1F8A43),
+        behavior: SnackBarBehavior.floating,
+      ),
     );
   }
 

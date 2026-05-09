@@ -1338,3 +1338,40 @@ Future<void> seedAllProductsOnce() async {
   debugPrint('✅ Seeded $added new + updated $updated (${allProducts.length} total). '
       'Removed ${_legacyFaceIds.length} legacy docs.');
 }
+
+String? seedImagePathForProduct({
+  String? docId,
+  String? id,
+  String? name,
+}) {
+  final allProducts = <Map<String, dynamic>>[
+    ..._products,
+    ..._buildFaceAssetProducts(),
+  ];
+
+  String norm(String v) => v.trim().toLowerCase();
+  String normLoose(String v) =>
+      norm(v).replaceAll(RegExp(r'[^a-z0-9]+'), ' ').trim();
+
+  final idCandidates = <String>{
+    if (docId != null && docId.trim().isNotEmpty) norm(docId),
+    if (id != null && id.trim().isNotEmpty) norm(id),
+  };
+  final nameCandidate = (name == null || name.trim().isEmpty) ? null : normLoose(name);
+
+  for (final p in allProducts) {
+    final pId = norm((p['id'] ?? '').toString());
+    final pName = normLoose((p['name'] ?? '').toString());
+    final imagePath = (p['imagePath'] ?? '').toString();
+    if (imagePath.isEmpty) continue;
+    if (idCandidates.contains(pId)) return imagePath;
+    if (nameCandidate != null && nameCandidate == pName) return imagePath;
+    if (nameCandidate != null &&
+        nameCandidate.isNotEmpty &&
+        pName.isNotEmpty &&
+        (pName.contains(nameCandidate) || nameCandidate.contains(pName))) {
+      return imagePath;
+    }
+  }
+  return null;
+}

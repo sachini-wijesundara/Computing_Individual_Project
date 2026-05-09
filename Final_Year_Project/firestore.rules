@@ -1,0 +1,244 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    // Primary: allowlist email (must match Firebase Auth ID token).
+    // Optional: create `admins/{uid}` with `{ "allow": true }` in console for this uid if email claim is missing.
+    function isAdmin() {
+      return isSignedIn() && (
+        request.auth.token.email == 'lavougevistaofficial@gmail.com' ||
+        (
+          exists(/databases/$(database)/documents/admins/$(request.auth.uid)) &&
+          get(/databases/$(database)/documents/admins/$(request.auth.uid)).data.allow == true
+        )
+      );
+    }
+
+    function isDeliveryStaff() {
+      return isSignedIn() &&
+        exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'delivery_staff';
+    }
+
+    function isChatOwner(chatId) {
+      return isSignedIn() && request.auth.uid == chatId;
+    }
+
+    // Checkout emails saved on users/{uid} when customer uses a different address than Auth email.
+    function orderCheckoutEmailOnProfile() {
+      return isSignedIn() &&
+        exists(/databases/$(database)/documents/users/$(request.auth.uid)) &&
+        resource.data.get('customerEmailLower', '') in
+          get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('checkoutEmails', []);
+    }
+
+    // Own order: uid, account email, phone, or checkout email stored on user profile.
+    // Product review star rating (clients may send int or float).
+    function validReviewRating(r) {
+      return (r is int || r is float)
+        && r >= 1
+        && r <= 5;
+    }
+
+    function validReviewComment(data) {
+      return !data.keys().hasAny(['comment'])
+        || (data.comment is string && data.comment.size() <= 2000);
+    }
+
+    function isOwnOrder() {
+      return isSignedIn() && (
+        resource.data.userId == request.auth.uid ||
+        (
+          request.auth.token.email != null && (
+            resource.data.get('customerEmail', '') == request.auth.token.email ||
+            resource.data.get('email', '') == request.auth.token.email ||
+            resource.data.get('customerEmailLower', '') == request.auth.token.email
+          )
+        ) ||
+        (
+          request.auth.token.phone_number != null && (
+            resource.data.get('customerPhone', '') == request.auth.token.phone_number ||
+            resource.data.get('phone', '') == request.auth.token.phone_number
+          )
+        ) ||
+        orderCheckoutEmailOnProfile()
+      );
+    }
+
+    function isAssignedDeliveryOrder() {
+      return isDeliveryStaff() && (
+        resource.data.get('deliveryStaffId', '') == request.auth.uid ||
+        resource.data.get('deliveryStaffUid', '') == request.auth.uid ||
+        (
+          request.auth.token.email != null &&
+          resource.data.get('deliveryStaffEmailLower', '') == request.auth.token.email
+        )
+      );
+    }
+
+    function deliveryStatusAllowed(status) {
+      return status in [
+        'assigned',
+        'accepted',
+        'picked_up',
+        'out_for_delivery',
+        'delivered',
+        'failed_delivery'
+      ];
+    }
+
+    function deliveryUpdateKeysAllowed() {
+      return request.resource.data.diff(resource.data).changedKeys().hasOnly([
+        'deliveryStatus',
+        'deliveryAcceptedAt',
+        'pickedUpAt',
+        'orderCollectedFromStore',
+        'orderCollectedAt',
+        'orderDeliveredByStaff',
+        'orderDeliveredByStaffAt',
+        'outForDeliveryAt',
+        'deliveredAt',
+        'failedAt',
+        'failedReason',
+        'cashCollectedSuccessfully',
+        'cashCollectedAt',
+        'cashCollectedAmount',
+        'cashHandoverDone',
+        'cashHandoverAt',
+        'proofImageUrl',
+        'proofImagePath',
+        'proofNote',
+        'proofUploadedAt',
+        'status',
+        'updatedAt'
+      ]);
+    }
+
+    function validDeliveryUpdate() {
+      return request.resource.data.deliveryStaffId == resource.data.deliveryStaffId
+        && request.resource.data.get('deliveryStaffUid', resource.data.get('deliveryStaffUid', '')) ==
+             resource.data.get('deliveryStaffUid', '')
+        && request.resource.data.get('deliveryStaffEmailLower', resource.data.get('deliveryStaffEmailLower', '')) ==
+             resource.data.get('deliveryStaffEmailLower', '')
+        && request.resource.data.get('deliveryStaffEmail', resource.data.get('deliveryStaffEmail', '')) ==
+             resource.data.get('deliveryStaffEmail', '')
+        && request.resource.data.deliveryStaffName == resource.data.deliveryStaffName
+        && request.resource.data.deliveryStatus is string
+        && deliveryStatusAllowed(request.resource.data.deliveryStatus)
+        && (!request.resource.data.keys().hasAny(['proofNote'])
+            || (request.resource.data.proofNote is string
+                && request.resource.data.proofNote.size() <= 1000));
+    }
+
+    // Products: public read, admin write.
+    match /products/{productId} {
+      allow read: if true;
+      allow create, update, delete: if isAdmin();
+    }
+
+    // Product reviews: top-level collection.
+    // Document id convention: `${productId}_${uid}` (one review per user per product).
+    match /product_reviews/{reviewId} {
+      allow read: if true;
+
+      allow create: if isSignedIn()
+        && request.resource.data.userId == request.auth.uid
+        && request.resource.data.productId is string
+        && request.resource.data.productId.size() > 0
+        && reviewId == request.resource.data.productId + "_" + request.auth.uid
+        && validReviewRating(request.resource.data.rating)
+        && validReviewComment(request.resource.data);
+
+      allow update: if isSignedIn()
+        && resource.data.userId == request.auth.uid
+        && request.resource.data.userId == resource.data.userId
+        && request.resource.data.productId == resource.data.productId
+        && reviewId == resource.data.productId + "_" + request.auth.uid
+        && validReviewRating(request.resource.data.rating)
+        && validReviewComment(request.resource.data);
+
+      allow delete: if isAdmin()
+        || (isSignedIn()
+            && resource.data.userId == request.auth.uid
+            && reviewId == resource.data.productId + "_" + request.auth.uid);
+    }
+
+    // Users profile: user owns own profile, admin can manage all.
+    match /users/{userId} {
+      allow read, create, update: if isAdmin() || (isSignedIn() && request.auth.uid == userId);
+      allow delete: if isAdmin();
+    }
+
+    // User feedback & problem reports.
+    match /user_feedback/{feedbackId} {
+      allow create: if isSignedIn()
+        && request.resource.data.userId == request.auth.uid
+        && request.resource.data.type is string
+        && (request.resource.data.type == 'feedback' || request.resource.data.type == 'report')
+        && request.resource.data.moodScore is int
+        && request.resource.data.moodScore >= 1
+        && request.resource.data.moodScore <= 5
+        && (!request.resource.data.keys().hasAny(['comment'])
+            || (request.resource.data.comment is string
+                && request.resource.data.comment.size() <= 1000));
+      allow read, update, delete: if isAdmin()
+        || (isSignedIn() && resource.data.userId == request.auth.uid);
+    }
+
+    // Orders: signed-in customers create with their uid; read own orders; admin full access.
+    match /orders/{orderId} {
+      allow create: if isSignedIn()
+        && request.resource.data.userId == request.auth.uid;
+      allow read: if isAdmin() || isOwnOrder() || isAssignedDeliveryOrder();
+      allow update: if isAdmin()
+        || (isAssignedDeliveryOrder()
+            && deliveryUpdateKeysAllowed()
+            && validDeliveryUpdate());
+      allow delete: if isAdmin();
+    }
+
+    // Support chat room metadata doc is keyed by user uid.
+    match /support_chats/{chatId} {
+      allow read: if isAdmin() || isChatOwner(chatId);
+      allow create, update: if isAdmin() || isChatOwner(chatId);
+      allow delete: if isAdmin();
+    }
+
+    // Optional admin-by-UID (manage in Firebase console only; not readable by clients).
+    match /admins/{adminId} {
+      allow read, write: if false;
+    }
+
+    // Live try-on presence (per user). User updates own doc; admins read all.
+    match /tryon_activity/{userId} {
+      allow read: if isAdmin();
+      allow create, update: if isSignedIn() && request.auth.uid == userId;
+      allow delete: if isAdmin();
+    }
+
+    // Support chat messages.
+    match /support_chats/{chatId}/messages/{messageId} {
+      allow read: if isAdmin() || isChatOwner(chatId);
+
+      // User can create only as senderRole=user in own chat.
+      // Admin can create only as senderRole=admin.
+      allow create: if (isChatOwner(chatId) &&
+                        request.resource.data.senderRole == 'user' &&
+                        request.resource.data.senderId == request.auth.uid) ||
+                     (isAdmin() &&
+                        request.resource.data.senderRole == 'admin');
+
+      // Both sides can update seen/status fields in their accessible chats.
+      allow update: if isAdmin() || isChatOwner(chatId);
+      allow delete: if isAdmin();
+    }
+
+    // Default deny.
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

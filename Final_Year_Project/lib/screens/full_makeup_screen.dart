@@ -73,7 +73,7 @@ class _FullMakeupTryOnScreenState extends State<FullMakeupTryOnScreen>
   int _activeCatIndex = 0;
   final Map<String, Product?> _applied       = {};  // label → applied Product
   final Map<String, int>      _shadeIdx      = {};  // label → shade index
-  double _intensity = 0.7;
+  double _intensity = 0.4;
 
   // ── UI toggles ────────────────────────────────────────────────────────────
   bool   _showShades   = false;
@@ -159,7 +159,7 @@ class _FullMakeupTryOnScreenState extends State<FullMakeupTryOnScreen>
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(
       content: Text('${p.name} added to cart!'),
-      backgroundColor: _maroon,
+      backgroundColor: const Color(0xFF1F8A43),
       behavior: SnackBarBehavior.floating,
     ));
   }

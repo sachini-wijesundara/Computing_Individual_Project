@@ -4,6 +4,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_storage/firebase_storage.dart';
 import 'package:firebase_analytics/firebase_analytics.dart';
 import 'package:firebase_crashlytics/firebase_crashlytics.dart';
+import 'package:flutter/foundation.dart';
 import '../firebase_options.dart';
 
 class FirebaseConfig {
@@ -31,10 +32,11 @@ class FirebaseConfig {
       _firestore = FirebaseFirestore.instance;
       _storage = FirebaseStorage.instance;
       _analytics = FirebaseAnalytics.instance;
-      _crashlytics = FirebaseCrashlytics.instance;
-      
-      // Enable crashlytics
-      await _crashlytics!.setCrashlyticsCollectionEnabled(true);
+      if (!kIsWeb) {
+        _crashlytics = FirebaseCrashlytics.instance;
+        // Crashlytics is not supported on Flutter web.
+        await _crashlytics!.setCrashlyticsCollectionEnabled(true);
+      }
       
     } catch (e, stack) {
       print('⚠️ Firebase initialization error: $e');
@@ -48,7 +50,9 @@ class FirebaseConfig {
           _firestore = FirebaseFirestore.instance;
           _storage = FirebaseStorage.instance;
           _analytics = FirebaseAnalytics.instance;
-          _crashlytics = FirebaseCrashlytics.instance;
+          if (!kIsWeb) {
+            _crashlytics = FirebaseCrashlytics.instance;
+          }
           print('✅ Successfully connected to existing Firebase instance');
         } catch (e2) {
           print('❌ Could not connect to Firebase: $e2');

@@ -688,7 +688,7 @@ private class LipRendererPlatformView(
   private var isCompareMode = false
   private var currentSplitPosition = 0.5f
   private var currentShadeColor = Color.RED
-  private var currentIntensity = 0.7f
+  private var currentIntensity = 0.4f
   private var currentHairStyleShape = "long"
   private var currentNailArtStyle = 0
   private var currentNailShape = 0

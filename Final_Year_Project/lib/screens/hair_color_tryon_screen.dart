@@ -413,7 +413,7 @@ class _HairColorTryOnState extends State<HairColorTryOnScreen> {
   late _HairCategory _selectedCategory;
   late _HairShade _selected;
 
-  double _intensity = 0.45;
+  double _intensity = 0.4;
   final _picker = ImagePicker();
 
   // Uploaded photo segmentation state

@@ -7,6 +7,7 @@ import 'screens/live_tryon_screen.dart';
 import 'screens/ai_beauty_assistant_screen.dart';
 import 'screens/product_showcase_screen.dart';
 import 'screens/onboarding_screen.dart';
+import 'screens/admin/admin_gate_screen.dart';
 import 'utils/fix_shades.dart';
 import 'screens/auth/login_screen.dart';
 import 'screens/auth/signup_screen.dart';
@@ -20,6 +21,11 @@ import 'firebase/firebase_config.dart';
 import 'services/firestore_service.dart'; // exposes seedAllProductsOnce()
 import 'utils/seed_products.dart';
 
+const bool _enableProductSeed = bool.fromEnvironment(
+  'ENABLE_PRODUCT_SEED',
+  defaultValue: false,
+);
+
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   
@@ -32,12 +38,16 @@ Future<void> main() async {
     // Continue anyway - app may work without Firebase features
   }
 
-  // Best-effort seed (adds only missing SKUs) - never crash on failure
-  try {
-    await seedAllProductsOnce();
-    debugPrint('✅ Products seeded successfully');
-  } catch (e) {
-    debugPrint('ℹ️ Seed skipped (Firestore not available): $e');
+  // Optional seed (admin/dev only) - disabled by default to avoid permission-denied spam
+  if (_enableProductSeed) {
+    try {
+      await seedAllProductsOnce();
+      debugPrint('✅ Products seeded successfully');
+    } catch (e) {
+      debugPrint('ℹ️ Seed skipped (Firestore not available): $e');
+    }
+  } else {
+    debugPrint('ℹ️ Product seed disabled (ENABLE_PRODUCT_SEED=false).');
   }
 
   runApp(MyApp()); // <-- not const to avoid “const constructor” lints
@@ -82,6 +92,7 @@ class MyApp extends StatelessWidget {
           '/live_tryon': (_) => LiveTryOnScreen(),
           '/ai_assistant': (_) => AIBeautyAssistantScreen(),
           '/products': (_) => ProductShowcaseScreen(),
+          '/admin': (_) => const AdminGateScreen(),
         },
       ),
     );
