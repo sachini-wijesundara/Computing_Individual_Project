@@ -784,6 +784,26 @@ private class LipRendererPlatformView(
         glOverlay.setEffect(shade, intensity, category, compare)
         result.success(null)
       }
+      "setLook" -> {
+        val args = call.arguments as? Map<*, *> ?: run {
+          result.success(null)
+          return@onMethodCall
+        }
+        val compare = args["isCompareMode"] as? Boolean ?: false
+        val raw = args["layers"] as? List<*> ?: emptyList<Any>()
+        val layers = mutableListOf<Triple<Int, Float, String>>()
+        for (item in raw) {
+          val m = item as? Map<*, *> ?: continue
+          val shade = (m["shade"] as? Number)?.toInt() ?: continue
+          val intensity = (m["intensity"] as? Number)?.toFloat() ?: 0.4f
+          val category = (m["category"] as? String) ?: continue
+          if (category.lowercase() == "cmd_none") continue
+          layers.add(Triple(shade, intensity, category))
+        }
+        val capped = if (layers.size > 10) layers.take(10) else layers
+        glOverlay.setLook(capped, compare)
+        result.success(null)
+      }
       "setDebug" -> {
         val show = (call.arguments as? Map<*, *>)?.get("showLandmarks") as? Boolean ?: false
         glOverlay.setShowLandmarks(show)
@@ -1446,6 +1466,8 @@ private class LipMaskGLSurfaceView(context: Context) : GLSurfaceView(context) {
     renderMode = RENDERMODE_CONTINUOUSLY
   }
   fun setEffect(s: Int, i: Float, cat: String, comp: Boolean) = queueEvent { renderer.updateEffect(s, i, cat, comp) }
+  fun setLook(layers: List<Triple<Int, Float, String>>, comp: Boolean) =
+    queueEvent { renderer.setLook(layers, comp) }
   fun setShowLandmarks(s: Boolean) = queueEvent { renderer.showLandmarks = s }
   fun setCalibration(split: Float) = queueEvent { renderer.splitPosition = split }
   fun setLandmarks(o: List<PointF>, i: List<PointF>, f: List<PointF>, le: List<PointF>, re: List<PointF>, iw: Int, ih: Int, r: Int) =
@@ -1476,6 +1498,9 @@ private class LipMaskRenderer : GLSurfaceView.Renderer {
   @Volatile private var color = floatArrayOf(1f, 0f, 0f, 0.5f)
   @Volatile private var category = "cmd_lipstick"
   @Volatile private var isCompareMode = false
+  /// When true, [onDrawFrame] uses [effectLayers] instead of single [category] (may be empty = clear).
+  @Volatile private var layeredLookEnabled = false
+  @Volatile private var effectLayers: List<Triple<Int, Float, String>> = emptyList()
 
   override fun onSurfaceCreated(gl: GL10?, config: EGLConfig?) {
     GLES20.glEnable(GLES20.GL_BLEND)
@@ -1498,6 +1523,61 @@ private class LipMaskRenderer : GLSurfaceView.Renderer {
     if (hideAll) return
 
     GLES20.glUseProgram(program)
+
+    if (layeredLookEnabled) {
+      if (effectLayers.isEmpty()) return
+      for (idx in effectLayers.indices) {
+        if (idx > 0) GLES20.glClear(GLES20.GL_STENCIL_BUFFER_BIT)
+        val layer = effectLayers[idx]
+        val s = layer.first
+        val i = layer.second
+        val cat = layer.third
+        color[0] = Color.red(s) / 255f
+        color[1] = Color.green(s) / 255f
+        color[2] = Color.blue(s) / 255f
+        color[3] = (if (cat.contains("face", ignoreCase = true)) 0.3f else 0.6f) * i.coerceIn(0f, 1f)
+        val ct = cat.lowercase()
+        val isFoundation = ct == "cmd_face" || ct == "cmd_foundation" || ct == "cmd_concealer" ||
+          ct.contains("foundation")
+        GLES20.glUniform4fv(colorHandle, 1, color, 0)
+        GLES20.glEnable(GLES20.GL_STENCIL_TEST)
+        if (isFoundation) {
+          val face = faceOvalBuf ?: continue
+          if (faceOvalCount < 3) continue
+
+          GLES20.glColorMask(false, false, false, false)
+          GLES20.glStencilFunc(GLES20.GL_ALWAYS, 1, 0xFF)
+          GLES20.glStencilOp(GLES20.GL_KEEP, GLES20.GL_KEEP, GLES20.GL_REPLACE)
+          draw(face, faceOvalCount)
+
+          GLES20.glStencilFunc(GLES20.GL_ALWAYS, 0, 0xFF)
+          leftEyeBuf?.let { draw(it, leftEyeCount) }
+          rightEyeBuf?.let { draw(it, rightEyeCount) }
+          outerLipBuf?.let { draw(it, outerLipCount) }
+
+          GLES20.glColorMask(true, true, true, true)
+          GLES20.glStencilFunc(GLES20.GL_EQUAL, 1, 0xFF)
+          draw(face, faceOvalCount)
+        } else {
+          val outer = outerLipBuf ?: continue
+          if (outerLipCount < 3) continue
+
+          GLES20.glColorMask(false, false, false, false)
+          GLES20.glStencilFunc(GLES20.GL_ALWAYS, 1, 0xFF)
+          GLES20.glStencilOp(GLES20.GL_KEEP, GLES20.GL_KEEP, GLES20.GL_REPLACE)
+          draw(outer, outerLipCount)
+
+          innerLipBuf?.let { GLES20.glStencilFunc(GLES20.GL_ALWAYS, 0, 0xFF); draw(it, innerLipCount) }
+
+          GLES20.glColorMask(true, true, true, true)
+          GLES20.glStencilFunc(GLES20.GL_EQUAL, 1, 0xFF)
+          draw(outer, outerLipCount)
+        }
+        GLES20.glDisable(GLES20.GL_STENCIL_TEST)
+      }
+      return
+    }
+
     GLES20.glUniform4fv(colorHandle, 1, color, 0)
     GLES20.glEnable(GLES20.GL_STENCIL_TEST)
 
@@ -1543,7 +1623,16 @@ private class LipMaskRenderer : GLSurfaceView.Renderer {
     GLES20.glDisable(GLES20.GL_STENCIL_TEST)
   }
 
+  fun setLook(layers: List<Triple<Int, Float, String>>, comp: Boolean) {
+    layeredLookEnabled = true
+    effectLayers = layers
+    isCompareMode = comp
+    hideAll = false
+  }
+
   fun updateEffect(s: Int, i: Float, cat: String, comp: Boolean) {
+    layeredLookEnabled = false
+    effectLayers = emptyList()
     color[0] = Color.red(s) / 255f; color[1] = Color.green(s) / 255f; color[2] = Color.blue(s) / 255f
     color[3] = (if (cat.contains("face")) 0.3f else 0.6f) * i.coerceIn(0f, 1f)
     category = cat

@@ -165,27 +165,58 @@ class _FullMakeupTryOnScreenState extends State<FullMakeupTryOnScreen>
   }
 
   // ── AR effect ─────────────────────────────────────────────────────────────
+  /// Draw order: base face → blush → highlight → eyes → lips (native stacks up to 10 layers).
+  static int _arLayerOrder(String arCommand) {
+    final c = arCommand.toLowerCase();
+    if (c == 'cmd_face' || c == 'cmd_foundation' || c == 'cmd_concealer') return 0;
+    if (c == 'cmd_blush') return 1;
+    if (c == 'cmd_highlight') return 2;
+    if (c == 'cmd_eyeshadow' || c == 'cmd_eye') return 3;
+    if (c == 'cmd_mascara') return 4;
+    if (c == 'cmd_eyebrow') return 5;
+    if (c == 'cmd_eyeliner') return 6;
+    if (c == 'cmd_lipliner') return 7;
+    return 8;
+  }
+
   void _applyEffect() {
     final ctrl = _nativeCtrl;
     if (ctrl == null) return;
-    final cat     = _kCats[_activeCatIndex];
-    final product = _applied[cat.label];
-    if (product == null) {
-      ctrl.setEffect(
-          shade: const Color(0x00000000), intensity: 0,
-          category: 'cmd_none', isCompareMode: _compareMode);
+
+    final entries = <({int catIndex, _MakeupCat cat, Color shade})>[];
+    for (var i = 0; i < _kCats.length; i++) {
+      final c = _kCats[i];
+      final product = _applied[c.label];
+      if (product == null) continue;
+      final shades = product.shades;
+      final maxIdx = shades.isEmpty ? 0 : shades.length - 1;
+      final idx = (_shadeIdx[c.label] ?? 0).clamp(0, maxIdx);
+      final hex =
+          shades.isNotEmpty ? (shades[idx]['hex'] ?? product.colorHex) : product.colorHex;
+      entries.add((catIndex: i, cat: c, shade: _hex(hex)));
+    }
+
+    entries.sort((a, b) {
+      final oa = _arLayerOrder(a.cat.arCommand);
+      final ob = _arLayerOrder(b.cat.arCommand);
+      if (oa != ob) return oa.compareTo(ob);
+      return a.catIndex.compareTo(b.catIndex);
+    });
+
+    if (entries.isEmpty) {
+      ctrl.setLook(layers: const [], isCompareMode: _compareMode);
       return;
     }
-    final shades = product.shades;
-    final maxIdx = shades.isEmpty ? 0 : shades.length - 1;
-    final idx    = (_shadeIdx[cat.label] ?? 0).clamp(0, maxIdx);
-    final hex    = shades.isNotEmpty ? (shades[idx]['hex'] ?? product.colorHex) : product.colorHex;
-    ctrl.setEffect(
-      shade: _hex(hex),
-      intensity: _intensity,
-      category: cat.arCommand,
-      isCompareMode: _compareMode,
-    );
+
+    final layers = <Map<String, dynamic>>[];
+    for (final e in entries.take(10)) {
+      layers.add({
+        'category': e.cat.arCommand,
+        'shade': e.shade.toARGB32(),
+        'intensity': _intensity,
+      });
+    }
+    ctrl.setLook(layers: layers, isCompareMode: _compareMode);
   }
 
   Color _hex(String h) {
@@ -249,7 +280,10 @@ class _FullMakeupTryOnScreenState extends State<FullMakeupTryOnScreen>
           ctrl.listen((e) {
             if (!mounted) return;
             setState(() {
-              if (e.type == 'ready') _nativeReady = true;
+              if (e.type == 'ready') {
+                _nativeReady = true;
+                _applyEffect();
+              }
               if (e.type == 'fps') _nativeFps = e.fps ?? 0;
             });
           });
@@ -358,7 +392,13 @@ class _FullMakeupTryOnScreenState extends State<FullMakeupTryOnScreen>
               final active = i == _activeCatIndex;
               final hasApplied = _applied[c.label] != null;
               return GestureDetector(
-                onTap: () => setState(() { _activeCatIndex = i; _showShades = false; }),
+                onTap: () {
+                  setState(() {
+                    _activeCatIndex = i;
+                    _showShades = false;
+                  });
+                  _applyEffect();
+                },
                 child: AnimatedContainer(
                   duration: const Duration(milliseconds: 200),
                   width: 66,

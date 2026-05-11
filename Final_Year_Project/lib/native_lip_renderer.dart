@@ -172,6 +172,18 @@ class NativeLipRendererController {
     });
   }
 
+  /// Composite multiple makeup categories in one frame (foundation + blush + lips, etc.).
+  /// Each map: `category` (String), `shade` (int ARGB), `intensity` (double). Max 10 layers on iOS.
+  Future<void> setLook({
+    required List<Map<String, dynamic>> layers,
+    bool isCompareMode = false,
+  }) async {
+    await _methodChannel.invokeMethod<void>('setLook', {
+      'layers': layers,
+      'isCompareMode': isCompareMode,
+    });
+  }
+
   Future<void> setDebug({required bool showLandmarks}) async {
     await _methodChannel.invokeMethod<void>('setDebug', {
       'showLandmarks': showLandmarks,

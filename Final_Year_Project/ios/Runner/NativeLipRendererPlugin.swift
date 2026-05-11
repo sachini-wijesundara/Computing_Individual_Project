@@ -774,6 +774,16 @@ private class NativeLipRendererView: NSObject, FlutterPlatformView, FlutterStrea
   private var wigMaskActive    = false // true while hairMaskLayer has a shadow cast
 
   private let lipOverlayLayer = CAShapeLayer()
+  /// When Flutter sends `setLook`, composite multiple categories (foundation + lips, etc.).
+  private let makeupStackParent = CALayer()
+  private var makeupSlotLayers: [CAShapeLayer] = []
+  private struct MakeupLookEntry {
+    var category: String
+    var shade: UIColor
+    var intensity: CGFloat
+  }
+  private var makeupLookStack: [MakeupLookEntry] = []
+  private var usesMakeupLookStack = false
   private let hairSideLayer   = CAShapeLayer()   // side-screen hair panels (unused but kept)
   private let hairMaskLayer   = CALayer()         // pixel-accurate hair colour
   private let hairImageLayer  = CALayer()         // wig composite overlay
@@ -863,6 +873,10 @@ private class NativeLipRendererView: NSObject, FlutterPlatformView, FlutterStrea
         self?.lastLayoutBounds = bounds
         self?.previewLayer?.frame = bounds
         self?.lipOverlayLayer.frame = bounds
+        self?.makeupStackParent.frame = bounds
+        for sl in self?.makeupSlotLayers ?? [] {
+          sl.frame = CGRect(origin: .zero, size: bounds.size)
+        }
         self?.hairSideLayer.frame = bounds
         self?.hairMaskLayer.frame = bounds
         self?.hairImageLayer.frame = bounds
@@ -892,6 +906,18 @@ private class NativeLipRendererView: NSObject, FlutterPlatformView, FlutterStrea
     lipOverlayLayer.allowsEdgeAntialiasing = true
     lipOverlayLayer.opacity = 0.0
     container.layer.addSublayer(lipOverlayLayer)
+
+    makeupStackParent.name = "makeupStackParent"
+    makeupStackParent.masksToBounds = false
+    for _ in 0..<10 {
+      let sl = CAShapeLayer()
+      sl.allowsEdgeAntialiasing = true
+      sl.opacity = 0
+      sl.fillRule = .evenOdd
+      makeupStackParent.addSublayer(sl)
+      makeupSlotLayers.append(sl)
+    }
+    container.layer.insertSublayer(makeupStackParent, below: lipOverlayLayer)
 
     hairSideLayer.fillRule = .nonZero
     hairSideLayer.opacity  = 0.0
@@ -1035,6 +1061,8 @@ private class NativeLipRendererView: NSObject, FlutterPlatformView, FlutterStrea
       result(nil)
     case "setEffect":
         if let args = call.arguments as? [String: Any] {
+            self.usesMakeupLookStack = false
+            self.makeupLookStack = []
             let oldNail = self.currentCategory.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "cmd_nails"
             let shadeNum = args["shade"] as? NSNumber
             let intensityNum = args["intensity"] as? NSNumber
@@ -1100,6 +1128,32 @@ private class NativeLipRendererView: NSObject, FlutterPlatformView, FlutterStrea
                 self.nailHighlightLayer.opacity = 0
                 self.nailSegmentLayer.opacity = 0
                 self.nailSegmentLayer.contents = nil
+            }
+        }
+        result(nil)
+    case "setLook":
+        if let args = call.arguments as? [String: Any] {
+            self.usesMakeupLookStack = true
+            if let compare = args["isCompareMode"] as? Bool {
+                self.isCompareMode = compare
+            }
+            if let raw = args["layers"] as? [[String: Any]] {
+                var stack: [MakeupLookEntry] = []
+                for dict in raw {
+                    guard let cat = dict["category"] as? String,
+                          let sn = dict["shade"] as? NSNumber,
+                          let ins = dict["intensity"] as? NSNumber else { continue }
+                    let c = cat.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if c.lowercased() == "cmd_none" { continue }
+                    stack.append(MakeupLookEntry(
+                        category: c,
+                        shade: UIColor(argb: sn.int64Value),
+                        intensity: CGFloat(ins.doubleValue)
+                    ))
+                }
+                self.makeupLookStack = stack.count > 10 ? Array(stack.prefix(10)) : stack
+            } else {
+                self.makeupLookStack = []
             }
         }
         result(nil)
@@ -2273,26 +2327,18 @@ private class NativeLipRendererView: NSObject, FlutterPlatformView, FlutterStrea
   private func drawLips(_ result: FaceLandmarkerResult) {
     guard let landmarks = result.faceLandmarks.first else {
         lipOverlayLayer.opacity = 0
+        for sl in makeupSlotLayers {
+            sl.opacity = 0
+            sl.path = nil
+        }
         hairSideLayer.opacity   = 0
         hairImageLayer.opacity  = 0
         return
     }
 
-    let path = UIBezierPath()
     lipOverlayLayer.lineJoin = .miter
     lipOverlayLayer.lineCap = .butt
     lipOverlayLayer.compositingFilter = nil
-    
-    // Apply Comparison Mask
-    if isCompareMode {
-        let mask = CAShapeLayer()
-        let splitX = container.bounds.width * currentSplitPosition
-        let maskRect = CGRect(x: splitX, y: 0, width: container.bounds.width - splitX, height: container.bounds.height)
-        mask.path = UIBezierPath(rect: maskRect).cgPath
-        lipOverlayLayer.mask = mask
-    } else {
-        lipOverlayLayer.mask = nil
-    }
 
     func point(for index: Int) -> CGPoint {
         let lm = landmarks[index]
@@ -2386,6 +2432,7 @@ private class NativeLipRendererView: NSObject, FlutterPlatformView, FlutterStrea
         p.close()
     }
 
+    let fillMakeupPathForCurrentCategory: (UIBezierPath) -> Bool = { [self] path in
     lipOverlayLayer.shadowOpacity = 0
     lipOverlayLayer.shadowRadius = 0
     lipOverlayLayer.lineWidth = 0
@@ -2469,7 +2516,7 @@ private class NativeLipRendererView: NSObject, FlutterPlatformView, FlutterStrea
             self.lastWigBounds = nil
 
         }
-        return
+        return true
     } else {
         self.hairImageLayer.opacity = 0
     }
@@ -2478,7 +2525,7 @@ private class NativeLipRendererView: NSObject, FlutterPlatformView, FlutterStrea
         // Hair is now handled by ImageSegmenter in applyHairMask.
         // drawLips is never called for cmd_haircolor, but guard here just in case.
         lipOverlayLayer.opacity = 0
-        return
+        return true
     } else if isBlush {
         // Blush: Angled upwards along the cheekbones (zygomatic bone)
         let leftCheek = [116, 117, 118, 100, 101, 119, 120, 121, 147, 213, 192, 214, 207, 205, 116]
@@ -2819,10 +2866,83 @@ private class NativeLipRendererView: NSObject, FlutterPlatformView, FlutterStrea
         lipOverlayLayer.fillRule = .evenOdd
     }
     lipOverlayLayer.path = path.cgPath
+    return false
+    }
+
+    if usesMakeupLookStack && makeupLookStack.isEmpty {
+        lipOverlayLayer.opacity = 0
+        lipOverlayLayer.path = nil
+        lipOverlayLayer.mask = nil
+        makeupStackParent.mask = nil
+        for sl in makeupSlotLayers {
+            sl.opacity = 0
+            sl.path = nil
+        }
+        return
+    }
+
+    if usesMakeupLookStack && !makeupLookStack.isEmpty {
+        lipOverlayLayer.opacity = 0
+        lipOverlayLayer.path = nil
+        lipOverlayLayer.mask = nil
+        makeupStackParent.frame = CGRect(origin: .zero, size: container.bounds.size)
+        if isCompareMode {
+            let mask = CAShapeLayer()
+            let splitX = container.bounds.width * currentSplitPosition
+            let maskRect = CGRect(x: splitX, y: 0, width: container.bounds.width - splitX, height: container.bounds.height)
+            mask.path = UIBezierPath(rect: maskRect).cgPath
+            makeupStackParent.mask = mask
+        } else {
+            makeupStackParent.mask = nil
+        }
+        for i in 0..<makeupSlotLayers.count {
+            if i < makeupLookStack.count {
+                let e = makeupLookStack[i]
+                self.currentShade = e.shade
+                self.currentIntensity = e.intensity
+                self.currentCategory = e.category
+                let slotPath = UIBezierPath()
+                if fillMakeupPathForCurrentCategory(slotPath) {
+                    makeupSlotLayers[i].opacity = 0
+                    makeupSlotLayers[i].path = nil
+                    continue
+                }
+                self.copyFacePaint(from: lipOverlayLayer, to: makeupSlotLayers[i])
+                makeupSlotLayers[i].opacity = 1
+            } else {
+                makeupSlotLayers[i].opacity = 0
+                makeupSlotLayers[i].path = nil
+            }
+        }
+        let catHair = currentCategory.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if catHair != "cmd_haircolor" { hairSideLayer.opacity = 0 }
+        return
+    }
+
+    for sl in makeupSlotLayers {
+        sl.opacity = 0
+        sl.path = nil
+    }
+    makeupStackParent.mask = nil
+
+    if isCompareMode {
+        let mask = CAShapeLayer()
+        let splitX = container.bounds.width * currentSplitPosition
+        let maskRect = CGRect(x: splitX, y: 0, width: container.bounds.width - splitX, height: container.bounds.height)
+        mask.path = UIBezierPath(rect: maskRect).cgPath
+        lipOverlayLayer.mask = mask
+    } else {
+        lipOverlayLayer.mask = nil
+    }
+
+    let path = UIBezierPath()
+    if fillMakeupPathForCurrentCategory(path) {
+        return
+    }
     lipOverlayLayer.opacity = 1.0
 
-    // Hide the side-hair panel when not in hair colour mode
-    if !isHairColor { hairSideLayer.opacity = 0 }
+    let catLowerHair = currentCategory.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    if catLowerHair != "cmd_haircolor" { hairSideLayer.opacity = 0 }
 
     // ── Apply Split Masking (ONLY in compare mode) ─────────────────────
     if isCompareMode && currentSplitPosition < 0.99 {
@@ -2838,6 +2958,21 @@ private class NativeLipRendererView: NSObject, FlutterPlatformView, FlutterStrea
     } else {
         lipOverlayLayer.mask = nil
     }
+  }
+
+  private func copyFacePaint(from src: CAShapeLayer, to dst: CAShapeLayer) {
+    dst.path = src.path
+    dst.fillRule = src.fillRule
+    dst.fillColor = src.fillColor
+    dst.strokeColor = src.strokeColor
+    dst.lineWidth = src.lineWidth
+    dst.lineJoin = src.lineJoin
+    dst.lineCap = src.lineCap
+    dst.compositingFilter = src.compositingFilter
+    dst.shadowColor = src.shadowColor
+    dst.shadowOpacity = src.shadowOpacity
+    dst.shadowRadius = src.shadowRadius
+    dst.shadowOffset = src.shadowOffset
   }
 
   func onListen(withArguments arguments: Any?, eventSink events: @escaping FlutterEventSink) -> FlutterError? {
