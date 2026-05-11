@@ -343,7 +343,9 @@ class _LiveTryOnScreenState extends State<LiveTryOnScreen> {
       if (sub == 'blush')              return 'cmd_blush';
       if (sub == 'highlighter')        return 'cmd_highlight';
       if (sub == 'contour & bronzer')  return 'cmd_highlight';
-      if (sub == 'concealer')          return 'cmd_concealer';
+      // Use cmd_face (full-face mask) like full_makeup_screen — cmd_concealer’s multi-polygon
+      // path overlaps under-eye + nose regions and evenOdd fill cancels overlap → “not applying”.
+      if (sub == 'concealer')          return 'cmd_face';
       // foundation / powder → generic face overlay
       return 'cmd_face';
     }
@@ -358,7 +360,7 @@ class _LiveTryOnScreenState extends State<LiveTryOnScreen> {
       if (image.contains('/blush/'))            return 'cmd_blush';
       if (image.contains('/highlighter/'))      return 'cmd_highlight';
       if (image.contains('/contour_bronzer/'))  return 'cmd_highlight';
-      if (image.contains('/concealer/'))        return 'cmd_concealer';
+      if (image.contains('/concealer/'))        return 'cmd_face';
       return 'cmd_face';
     }
 
@@ -376,7 +378,7 @@ class _LiveTryOnScreenState extends State<LiveTryOnScreen> {
     if (hasAny(['blush', 'rouge']))                             return 'cmd_blush';
     if (hasAny(['highlighter', 'illuminator', 'glow']))         return 'cmd_highlight';
     if (hasAny(['bronzer', 'contour', 'sculpt']))               return 'cmd_highlight';
-    if (hasAny(['concealer']))                                   return 'cmd_concealer';
+    if (hasAny(['concealer']))                                   return 'cmd_face';
     if (hasAny(['foundation', 'face powder', 'compact']))        return 'cmd_face';
 
     return 'cmd_lipstick';

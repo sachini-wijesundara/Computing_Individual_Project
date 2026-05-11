@@ -37,6 +37,7 @@ import io.flutter.plugin.platform.PlatformViewFactory
 import com.google.mediapipe.framework.image.BitmapImageBuilder
 import com.google.mediapipe.framework.image.ByteBufferExtractor
 import com.google.mediapipe.framework.image.MPImage
+import com.google.mediapipe.tasks.components.containers.NormalizedLandmark
 import com.google.mediapipe.tasks.core.BaseOptions
 import com.google.mediapipe.tasks.vision.core.RunningMode
 import com.google.mediapipe.tasks.vision.facelandmarker.FaceLandmarker
@@ -1027,6 +1028,59 @@ private class LipRendererPlatformView(
     image.close()
   }
 
+  /** Push face-oval forehead/temple points toward the hairline in normalized Y (no inner mesh detours). */
+  private fun foundationFaceOvalPoints(
+    landmarks: List<NormalizedLandmark>,
+    indices: IntArray,
+  ): List<PointF> {
+    val eyeY = (landmarks[33].y() + landmarks[263].y()).toFloat() * 0.5f
+    val chinY = landmarks[152].y().toFloat()
+    val faceLen = kotlin.math.abs(chinY - eyeY).coerceAtLeast(0.06f)
+    val liftN = (faceLen * 0.095f).coerceIn(0.013f, 0.054f)
+    val hairlineExtraN = 0.014f
+    val hairlineCrownIds = setOf(10, 151, 109, 338, 297, 332, 284, 251)
+    val w = hashMapOf(
+      151 to 1f, 109 to 1f, 338 to 1f, 10 to 0.98f,
+      297 to 0.60f, 332 to 0.60f, 284 to 0.42f, 251 to 0.42f,
+      389 to 0.27f, 356 to 0.20f, 454 to 0.16f, 323 to 0.16f, 361 to 0.14f, 288 to 0.12f, 397 to 0.12f, 365 to 0.10f,
+      379 to 0.07f, 378 to 0.07f, 400 to 0.06f, 377 to 0.06f,
+      67 to 0.39f, 103 to 0.34f, 54 to 0.30f, 21 to 0.29f, 162 to 0.27f, 127 to 0.23f, 234 to 0.21f, 93 to 0.17f, 132 to 0.14f,
+      172 to 0.10f, 58 to 0.085f,
+    )
+    val pts = indices.map { i ->
+      val lm = landmarks[i]
+      val wt = w[i] ?: 0f
+      var y = lm.y().toFloat()
+      if (wt > 0f) y -= liftN * wt
+      if (i in hairlineCrownIds) y -= hairlineExtraN
+      PointF(lm.x().toFloat(), y)
+    }.toMutableList()
+    smoothFoundationForeheadPolyline(pts)
+    return pts
+  }
+
+  /** Same idea as iOS: soften crown + upper-face span to kill mesh “V” / zig-zag on GL mask. */
+  private fun smoothFoundationForeheadPolyline(pts: MutableList<PointF>) {
+    if (pts.size < 12) return
+    fun smoothRange(lo: Int, hi: Int, passes: Int) {
+      if (hi - lo < 2) return
+      repeat(passes) {
+        val snap = pts.map { PointF(it.x, it.y) }
+        for (i in (lo + 1) until hi) {
+          val p = snap[i]
+          val a = snap[i - 1]
+          val b = snap[i + 1]
+          pts[i].x = p.x * 0.46f + (a.x + b.x) * 0.27f
+          pts[i].y = p.y * 0.46f + (a.y + b.y) * 0.27f
+        }
+      }
+    }
+    val last = pts.size - 1
+    smoothRange(0, minOf(6, last), 5)
+    if (last >= 36) smoothRange(last - 10, last, 5)
+    else if (last >= 35) smoothRange(last - 9, last, 5)
+  }
+
   // ─── Face landmarks → GL lip/makeup overlay ───────────────────────────────
   private fun runFaceMesh(mpImage: MPImage, image: ImageProxy) {
     if (!ensureLandmarker()) { processing = false; image.close(); return }
@@ -1037,13 +1091,21 @@ private class LipRendererPlatformView(
     if (landmarks != null) {
       val outerLipIdx = intArrayOf(61, 146, 91, 181, 84, 17, 314, 405, 321, 375, 291, 308, 324, 318, 402, 317, 14, 87, 178, 88)
       val innerLipIdx = intArrayOf(78, 95, 88, 178, 87, 14, 317, 402, 318, 324)
-      val faceOvalIdx = intArrayOf(10, 338, 297, 332, 284, 251, 389, 356, 454, 323, 361, 288, 397, 365, 379, 378, 400, 377, 152, 148, 176, 149, 150, 136, 172, 58, 132, 93, 234, 127, 162, 21, 54, 103, 67, 109)
+      // 109→151→338 only; avoid 9/337/108 (re-entrant path + evenOdd = forehead hole).
+      val faceOvalIdx = intArrayOf(338, 297, 332, 284, 251, 389, 356, 454, 323, 361, 288, 397, 365, 379, 378, 400, 377, 152, 148, 176, 149, 150, 136, 172, 58, 132, 93, 234, 127, 162, 21, 54, 103, 67, 109, 151, 10)
       val leftEyeIdx  = intArrayOf(33, 7, 163, 144, 145, 153, 154, 155, 133, 173, 157, 158, 159, 160, 161, 246)
       val rightEyeIdx = intArrayOf(362, 382, 381, 380, 374, 373, 390, 249, 263, 466, 388, 387, 386, 385, 384, 398)
 
       val outerLip = outerLipIdx.map { PointF(landmarks[it].x(), landmarks[it].y()) }
       val innerLip = innerLipIdx.map { PointF(landmarks[it].x(), landmarks[it].y()) }
-      val faceOval = faceOvalIdx.map { PointF(landmarks[it].x(), landmarks[it].y()) }
+      val faceOval = if (currentCategory == "cmd_face" ||
+        currentCategory.contains("foundation", ignoreCase = true) ||
+        currentCategory.contains("concealer", ignoreCase = true)
+      ) {
+        foundationFaceOvalPoints(landmarks, faceOvalIdx)
+      } else {
+        faceOvalIdx.map { PointF(landmarks[it].x(), landmarks[it].y()) }
+      }
       val leftEye  = leftEyeIdx.map  { PointF(landmarks[it].x(), landmarks[it].y()) }
       val rightEye = rightEyeIdx.map { PointF(landmarks[it].x(), landmarks[it].y()) }
 
@@ -1439,7 +1501,11 @@ private class LipMaskRenderer : GLSurfaceView.Renderer {
     GLES20.glUniform4fv(colorHandle, 1, color, 0)
     GLES20.glEnable(GLES20.GL_STENCIL_TEST)
 
-    val isFoundation = category == "cmd_face" || category == "cmd_foundation"
+    // cmd_face / cmd_foundation / cmd_concealer → full-face stencil. Avoid substring "concealer"
+    // (matches unrelated strings); live try-on sends cmd_face for concealer products.
+    val ct = category.lowercase()
+    val isFoundation = ct == "cmd_face" || ct == "cmd_foundation" || ct == "cmd_concealer" ||
+      ct.contains("foundation")
 
     if (isFoundation) {
       val face = faceOvalBuf ?: return
