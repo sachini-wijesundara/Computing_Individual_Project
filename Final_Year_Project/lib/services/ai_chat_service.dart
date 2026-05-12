@@ -1,5 +1,6 @@
 import 'dart:convert';
-import 'dart:io';
+
+import 'package:cross_file/cross_file.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 
@@ -103,10 +104,13 @@ class AIChatService {
   ));
 
   /// Send image to Flask AI server for Skin/Undertone analysis
-  Future<Map<String, dynamic>?> analyzeSkinRemote(File imageFile) async {
+  Future<Map<String, dynamic>?> analyzeSkinRemote(XFile imageFile) async {
     try {
       final formData = FormData.fromMap({
-        'image': await MultipartFile.fromFile(imageFile.path, filename: 'skin.jpg'),
+        'image': MultipartFile.fromBytes(
+          await imageFile.readAsBytes(),
+          filename: 'skin.jpg',
+        ),
       });
       final response = await _dio.post('/analyze_skin', data: formData);
       if (response.statusCode == 200) {
@@ -119,10 +123,13 @@ class AIChatService {
   }
 
   /// Send image to Flask AI server for Hair Type/Color analysis
-  Future<Map<String, dynamic>?> analyzeHairRemote(File imageFile) async {
+  Future<Map<String, dynamic>?> analyzeHairRemote(XFile imageFile) async {
     try {
       final formData = FormData.fromMap({
-        'image': await MultipartFile.fromFile(imageFile.path, filename: 'hair.jpg'),
+        'image': MultipartFile.fromBytes(
+          await imageFile.readAsBytes(),
+          filename: 'hair.jpg',
+        ),
       });
       final response = await _dio.post('/analyze_hair', data: formData);
       if (response.statusCode == 200) {
@@ -194,7 +201,7 @@ class AIChatService {
   }
 
   /// Analyse skin tone from an image file
-  Future<SkinAnalysisResult> analyzeSkin(File imageFile) async {
+  Future<SkinAnalysisResult> analyzeSkin(XFile imageFile) async {
     final available = await isServerAvailable();
 
     if (!available) {
@@ -213,7 +220,7 @@ class AIChatService {
   }
 
   /// Analyse hair type and color from an image file
-  Future<HairAnalysisResult> analyzeHair(File imageFile) async {
+  Future<HairAnalysisResult> analyzeHair(XFile imageFile) async {
     final available = await isServerAvailable();
 
     if (!available) {

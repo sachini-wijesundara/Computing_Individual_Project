@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import 'package:cloud_firestore/cloud_firestore.dart';
 import '../models/product.dart';
 import '../models/product_review.dart';
@@ -324,16 +326,51 @@ class FirestoreDb {
     }
   }
 
-  // ── Favourites ────────────────────────────────────────────────────────────────
+  // ── Favourites / wishlist (stored on `users/{uid}.favourites` as product id strings) ─
+
+  /// Live list of product document ids in the user's wishlist (order preserved).
+  Stream<List<String>> favouriteProductIdsStream(String uid) {
+    return _db.collection('users').doc(uid).snapshots().map((snap) {
+      return List<String>.from(snap.data()?['favourites'] ?? []);
+    });
+  }
+
+  /// Loads [Product]s for the given ids, in the same order as [ids]. Skips missing ids.
+  /// Firestore `whereIn` is limited to 10 values per query.
+  Future<List<Product>> fetchProductsByIdsInOrder(List<String> ids) async {
+    if (ids.isEmpty) return [];
+    const maxIn = 10;
+    final byId = <String, Product>{};
+    for (var i = 0; i < ids.length; i += maxIn) {
+      final slice = ids.sublist(i, math.min(i + maxIn, ids.length));
+      final snap = await _db
+          .collection('products')
+          .where(FieldPath.documentId, whereIn: slice)
+          .get();
+      for (final doc in snap.docs) {
+        byId[doc.id] = Product.fromFirestore(doc);
+      }
+    }
+    final out = <Product>[];
+    for (final id in ids) {
+      final p = byId[id];
+      if (p != null) out.add(p);
+    }
+    return out;
+  }
 
   Future<void> toggleFavourite(String uid, String productId) async {
     final ref = _db.collection('users').doc(uid);
     final snap = await ref.get();
     final favs = List<String>.from(snap.data()?['favourites'] ?? []);
-    if (favs.contains(productId)) {
-      await ref.update({'favourites': FieldValue.arrayRemove([productId])});
-    } else {
-      await ref.update({'favourites': FieldValue.arrayUnion([productId])});
-    }
+    final remove = favs.contains(productId);
+    await ref.set(
+      {
+        'favourites':
+            remove ? FieldValue.arrayRemove([productId]) : FieldValue.arrayUnion([productId]),
+        'updatedAt': FieldValue.serverTimestamp(),
+      },
+      SetOptions(merge: true),
+    );
   }
 }

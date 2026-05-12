@@ -13,12 +13,13 @@ class FirebaseStorageService {
       final user = _auth.currentUser;
       if (user == null) throw Exception('User not authenticated');
 
+      // Single object per user so re-uploads replace the file (new download URL).
       final ref = _storage
           .ref()
           .child('users')
           .child(user.uid)
           .child('profile')
-          .child('${DateTime.now().millisecondsSinceEpoch}.jpg');
+          .child('avatar.jpg');
 
       final uploadTask = ref.putFile(imageFile);
       final snapshot = await uploadTask;

@@ -12,6 +12,8 @@ This document explains how the AI parts work in the current project so you can u
 
 **How markers (or a new machine) run the app with AI features:**
 
+If an **IDE or agent status panel** shows `OPENROUTER_API_KEY` / `OPENROUTER_MODEL` as missing while other keys pass, that panel is usually reading the **Git workspace root** (the parent of this folder). Use the repo file **`../.env.example`** there: copy it to **`../.env`** and add the same OpenRouter values, or define those variables in **Cursor → Settings → Environment** (or wherever `OPENAI_API_KEY` is set).
+
 1. Copy the template and add keys locally (this file stays only on their machine):
    ```bash
    cd Final_Year_Project
@@ -20,7 +22,9 @@ This document explains how the AI parts work in the current project so you can u
 2. Edit `.env` and set:
    - **`GEMINI_API_KEY`** — from [Google AI Studio](https://aistudio.google.com/app/apikey) (Lumi chat + Skin & Hair vision in `TFLiteAnalysisService` / `GeminiChatService`).
    - **`OPENROUTER_API_KEY`** — from [OpenRouter](https://openrouter.ai/keys) (Hair **Style Match** screen only).
-3. Install and run on a device/simulator using a **full** build so `--dart-define` is applied, e.g.:
+3. **Option A — IDE / plain `flutter run`:** keep keys in **`.env`** next to `pubspec.yaml` (same variables as above). It is declared as a Flutter **asset**, so it is copied into the app when you build; **stop and run `flutter run` again** after editing. If the file is missing, run `cp .env.example .env` first or the build can fail on the missing asset.
+4. **Optional fallbacks:** `assets/env/local_keys.env` (tracked, empty defaults) is merged after `.env` for keys you only set there. **`--dart-define`** overrides both when set.
+5. **Option B — shell / CI:** use `--dart-define` so keys never sit in tracked files, e.g.:
    ```bash
    ./ios_quick_run.sh
    ```
@@ -28,11 +32,17 @@ This document explains how the AI parts work in the current project so you can u
    ```bash
    flutter run --dart-define=GEMINI_API_KEY=YOUR_KEY --dart-define=OPENROUTER_API_KEY=YOUR_KEY
    ```
-   Hot reload does **not** refresh API keys; change `.env` and run **`flutter run` again** (or the script above).
+   `--dart-define` overrides bundled env files when set.
+
+   Hot reload does **not** refresh API keys; after editing `.env` run **`flutter run` again** (or the script above).
 
 **If markers run without any keys:** the app still runs; features fall back or show setup hints (e.g. offline chat text, pixel/TFLite fallbacks for analysis, Style Match asks for OpenRouter). Live try‑on and most shopping flows do not need these keys.
 
-**For your report / Viva:** state that secrets are supplied via `.env` (from `.env.example`) or `--dart-define`, and are excluded from version control by design.
+**For your report / Viva:** state that secrets are supplied via bundled **`.env`** (from `.env.example`), optional `assets/env/local_keys.env`, `ios_quick_run.sh`, or `--dart-define`, and that `.env` is excluded from version control by design.
+
+**Manual QA:** use `docs/QA_CHECKLIST.md` (session template + device checks). Automated: `flutter pub get`, then `./scripts/qa_automated.sh` (runs analyze with non-fatal infos/warnings + `flutter test`).
+
+**Web hosting (Firebase — admin + delivery only):** `docs/HOSTING.md`. One-time: `./scripts/setup_firebase_hosting_sites.sh`, then `./scripts/deploy_firebase_hosting.sh`. **iOS:** same doc, TestFlight / App Store section.
 
 ## Live Try‑On (Lipsticks & Makeup)
 

@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import '../services/delivery_staff_service.dart';
 import 'delivery_staff_order_detail_screen.dart';
 import 'delivery_staff_profile_screen.dart';
+import '../../utils/price_format.dart';
 
 class DeliveryStaffHomeScreen extends StatefulWidget {
   const DeliveryStaffHomeScreen({super.key});
@@ -210,7 +211,7 @@ class _DeliveryStaffHomeScreenState extends State<DeliveryStaffHomeScreen> {
                               Expanded(
                                 child: _walletTile(
                                   'Wallet Balance',
-                                  'Rs ${walletBalance.toStringAsFixed(0)}',
+                                  formatRs(walletBalance),
                                   Icons.account_balance_wallet_rounded,
                                 ),
                               ),
@@ -218,7 +219,7 @@ class _DeliveryStaffHomeScreenState extends State<DeliveryStaffHomeScreen> {
                               Expanded(
                                 child: _walletTile(
                                   'Pending Cash',
-                                  'Rs ${pendingCash.toStringAsFixed(0)}',
+                                  formatRs(pendingCash),
                                   Icons.payments_rounded,
                                 ),
                               ),
@@ -226,7 +227,7 @@ class _DeliveryStaffHomeScreenState extends State<DeliveryStaffHomeScreen> {
                               Expanded(
                                 child: _walletTile(
                                   'Handover Total',
-                                  'Rs ${handoverTotal.toStringAsFixed(0)}',
+                                  formatRs(handoverTotal),
                                   Icons.receipt_long_rounded,
                                 ),
                               ),
@@ -659,7 +660,7 @@ class _DeliveryStaffHomeScreenState extends State<DeliveryStaffHomeScreen> {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
-                      'Pending cash to settle: Rs ${pendingCash.toStringAsFixed(0)}',
+                      'Pending cash to settle: ${formatRs(pendingCash)}',
                       style: const TextStyle(fontWeight: FontWeight.w700),
                     ),
                     const SizedBox(height: 12),
@@ -724,7 +725,7 @@ class _DeliveryStaffHomeScreenState extends State<DeliveryStaffHomeScreen> {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text(
-              'Handover recorded: Rs ${settled.toStringAsFixed(0)}',
+              'Handover recorded: ${formatRs(settled)}',
             ),
           ),
         );

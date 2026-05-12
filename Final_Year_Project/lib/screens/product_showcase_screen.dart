@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import '../utils/price_format.dart';
 import 'virtual_tryon_popup.dart';
 
 class ProductShowcaseScreen extends StatelessWidget {
@@ -90,7 +91,7 @@ class ProductShowcaseScreen extends StatelessWidget {
                 [
                   Product(
                     name: 'Colour Riche Satin Lipstick',
-                    price: '\$10.99',
+                    price: 3299,
                     color: Colors.red,
                     image: 'assets/lipstick_red.png',
                     category: 'Lip Sticks',
@@ -101,7 +102,7 @@ class ProductShowcaseScreen extends StatelessWidget {
                   ),
                   Product(
                     name: 'Infallible Pro Matte Lipstick',
-                    price: '\$12.99',
+                    price: 3899,
                     color: Colors.pink,
                     image: 'assets/lipstick_pink.png',
                     category: 'Lip Sticks',
@@ -112,7 +113,7 @@ class ProductShowcaseScreen extends StatelessWidget {
                   ),
                   Product(
                     name: 'Colour Riche Nude Lipstick',
-                    price: '\$10.99',
+                    price: 3299,
                     color: Color(0xFFD4AF8C),
                     image: 'assets/lipstick_nude.png',
                     category: 'Lip Sticks',
@@ -132,21 +133,21 @@ class ProductShowcaseScreen extends StatelessWidget {
                 [
                   Product(
                     name: 'True Match Foundation',
-                    price: '\$14.99',
+                    price: 4499,
                     color: Color(0xFFF4C2A1),
                     image: 'assets/foundation_light.png',
                     category: 'Makeup',
                   ),
                   Product(
                     name: 'Infallible Pro Glow',
-                    price: '\$16.99',
+                    price: 5099,
                     color: Color(0xFFE6B8A2),
                     image: 'assets/foundation_medium.png',
                     category: 'Makeup',
                   ),
                   Product(
                     name: 'True Match Lumi',
-                    price: '\$15.99',
+                    price: 4799,
                     color: Color(0xFFD4A574),
                     image: 'assets/foundation_dark.png',
                     category: 'Makeup',
@@ -163,7 +164,7 @@ class ProductShowcaseScreen extends StatelessWidget {
                 [
                   Product(
                     name: 'Telescopic Mascara',
-                    price: '\$9.99',
+                    price: 2899,
                     color: Colors.black,
                     image: 'assets/mascara_black.png',
                     category: 'Mascara',
@@ -173,7 +174,7 @@ class ProductShowcaseScreen extends StatelessWidget {
                   ),
                   Product(
                     name: 'Infallible Eyeshadow',
-                    price: '\$8.99',
+                    price: 2599,
                     color: Colors.purple,
                     image: 'assets/eyshadow_purple.png',
                     category: 'Makeup',
@@ -184,7 +185,7 @@ class ProductShowcaseScreen extends StatelessWidget {
                   ),
                   Product(
                     name: 'Voluminous Eyeliner',
-                    price: '\$7.99',
+                    price: 2299,
                     color: Colors.brown,
                     image: 'assets/eyeliner_brown.png',
                     category: 'Makeup',
@@ -305,7 +306,7 @@ class ProductShowcaseScreen extends StatelessWidget {
                   ),
                   SizedBox(height: 4),
                   Text(
-                    product.price,
+                    formatRs(product.price),
                     style: TextStyle(
                       fontSize: 16,
                       fontWeight: FontWeight.bold,
@@ -355,7 +356,7 @@ class ProductShowcaseScreen extends StatelessWidget {
 
 class Product {
   final String name;
-  final String price;
+  final double price;
   final Color color;
   final String image;
   final String category;

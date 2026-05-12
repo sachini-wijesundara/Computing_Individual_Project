@@ -10,6 +10,7 @@ import '../config/emailjs_config.dart';
 import '../providers/cart_provider.dart';
 import '../services/emailjs_service.dart';
 import '../utils/cart_pricing.dart';
+import '../utils/price_format.dart';
 import '../widgets/firebase_image.dart';
 import 'order_detail_screen.dart';
 
@@ -114,7 +115,7 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
       final shade = item.selectedShade?.name;
       final line = item.product.price * item.quantity;
       final shadeText = shade == null ? '' : ' ($shade)';
-      return '- ${item.product.name}$shadeText x${item.quantity} - LKR ${line.toStringAsFixed(0)}';
+      return '- ${item.product.name}$shadeText x${item.quantity} - ${formatRs(line)}';
     }).join('\n');
 
     return {
@@ -124,7 +125,7 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
       'order_id': orderId,
       'order_date': orderDate,
       'payment_method': paymentLabel,
-      'order_total': 'LKR ${total.toStringAsFixed(2)}',
+      'order_total': formatRs(total, fractionDigits: 2),
       'delivery_address': '${_addressCtrl.text.trim()}\n${_cityCtrl.text.trim()}',
       // Keep both keys so EmailJS template can use either {{order_items_html}}
       // or {{order_items_text}} without rendering raw HTML tags.
@@ -284,7 +285,7 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
               ),
               const SizedBox(height: 10),
               Text(
-                'Total: LKR ${total.toStringAsFixed(2)}\nPayment: $paymentLabel',
+                'Total: ${formatRs(total, fractionDigits: 2)}\nPayment: $paymentLabel',
                 textAlign: TextAlign.center,
                 style: const TextStyle(
                   fontSize: 14.5,
@@ -550,11 +551,11 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
       ),
       child: Column(
         children: [
-          _totRow('Subtotal ($lineCount)', 'LKR ${subtotal.toStringAsFixed(2)}'),
+          _totRow('Subtotal ($lineCount)', formatRs(subtotal, fractionDigits: 2)),
           const SizedBox(height: 8),
-          _totRow('Discount', '-LKR ${discount.toStringAsFixed(2)}'),
+          _totRow('Discount', formatRs(-discount, fractionDigits: 2)),
           const Padding(padding: EdgeInsets.symmetric(vertical: 12), child: Divider(height: 1)),
-          _totRow('Total', 'LKR ${total.toStringAsFixed(2)}', emphasize: true),
+          _totRow('Total', formatRs(total, fractionDigits: 2), emphasize: true),
         ],
       ),
     );
@@ -657,7 +658,7 @@ class _SummaryLine extends StatelessWidget {
             ),
           ),
           Text(
-            'LKR ${line.toStringAsFixed(0)}',
+            formatRs(line),
             style: const TextStyle(fontWeight: FontWeight.w800, color: _kMaroon),
           ),
         ],
@@ -748,7 +749,7 @@ class _BottomBar extends StatelessWidget {
                     Text('Total', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: _kMuted.withValues(alpha: 0.9))),
                     const SizedBox(height: 2),
                     Text(
-                      'LKR ${total.toStringAsFixed(2)}',
+                      formatRs(total, fractionDigits: 2),
                       style: const TextStyle(fontSize: 22, fontWeight: FontWeight.w800, color: _kMaroon),
                     ),
                   ],

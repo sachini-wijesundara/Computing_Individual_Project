@@ -23,6 +23,7 @@ dependencies:
   google_generative_ai: ^0.4.7
   
   http: ^1.1.0
+  flutter_dotenv: ^5.2.1
   dio: ^5.3.2
   provider: ^6.1.1
   vector_math: ^2.1.4
@@ -51,7 +52,12 @@ flutter:
   - assets/shaders/lipstick.frag
   uses-material-design: true
   assets:
+  - .env
+  - assets/env/local_keys.env
   - assets/logo.png
+  - assets/discover/discover_live_makeup_hair.png
+  - assets/discover/discover_ai_beauty.png
+  - assets/discover/discover_hair_style.png
   # MediaPipe + live try-on models (used by native renderer)
   - assets/models/face_landmarker.task
   - assets/models/hand_landmarker.task

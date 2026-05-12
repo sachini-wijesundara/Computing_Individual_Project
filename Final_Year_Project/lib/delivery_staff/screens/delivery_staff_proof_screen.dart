@@ -39,7 +39,7 @@ class _DeliveryStaffProofScreenState extends State<DeliveryStaffProofScreen> {
     try {
       await DeliveryStaffService.instance.attachDeliveryProof(
         orderId: widget.orderId,
-        localFilePath: _file!.path,
+        image: _file!,
         note: _noteCtrl.text.trim(),
       );
       if (!mounted) return;

@@ -1,7 +1,11 @@
+import 'dart:io';
+
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
+import 'package:image_picker/image_picker.dart';
 
 import '../services/firebase_auth_service.dart';
+import '../services/firebase_storage_service.dart';
 
 const _bgTop = Color(0xFFF5F5F5);
 const _bgMid = Color(0xFFF1ABAD);
@@ -25,6 +29,9 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
   final _dobCtrl = TextEditingController(text: '23/05/1995');
   final _countryCtrl = TextEditingController(text: 'Sri Lanka');
   bool _saving = false;
+  bool _uploadingPhoto = false;
+  /// Shown immediately after upload so the avatar refreshes even if the download URL is unchanged.
+  String? _avatarUrlOverride;
 
   @override
   void initState() {
@@ -32,6 +39,7 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
     final user = FirebaseAuth.instance.currentUser;
     _nameCtrl.text = (user?.displayName?.trim().isNotEmpty ?? false) ? user!.displayName!.trim() : 'Melissa Peters';
     _emailCtrl.text = user?.email ?? 'melpeters@gmail.com';
+    _avatarUrlOverride = user?.photoURL;
   }
 
   @override
@@ -67,9 +75,83 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
     }
   }
 
+  Future<void> _showPhotoSourcePicker() async {
+    if (_uploadingPhoto) return;
+    final source = await showModalBottomSheet<ImageSource>(
+      context: context,
+      showDragHandle: true,
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.photo_library_outlined),
+              title: const Text('Choose from gallery'),
+              onTap: () => Navigator.pop(ctx, ImageSource.gallery),
+            ),
+            ListTile(
+              leading: const Icon(Icons.photo_camera_outlined),
+              title: const Text('Take a photo'),
+              onTap: () => Navigator.pop(ctx, ImageSource.camera),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (source == null || !mounted) return;
+
+    final picker = ImagePicker();
+    final picked = await picker.pickImage(
+      source: source,
+      maxWidth: 1600,
+      maxHeight: 1600,
+      imageQuality: 88,
+    );
+    if (picked == null || !mounted) return;
+
+    await _uploadProfilePhoto(File(picked.path));
+  }
+
+  Future<void> _uploadProfilePhoto(File file) async {
+    setState(() => _uploadingPhoto = true);
+    try {
+      final url = await FirebaseStorageService.uploadProfileImage(file);
+      await FirebaseAuthService.updateUserProfile(photoURL: url);
+      await FirebaseAuth.instance.currentUser?.reload();
+      if (!mounted) return;
+      setState(() {
+        _avatarUrlOverride =
+            FirebaseAuth.instance.currentUser?.photoURL ?? url;
+        _uploadingPhoto = false;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Profile photo updated'),
+          backgroundColor: Color(0xFF1F8A43),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    } catch (e) {
+      if (mounted) {
+        setState(() => _uploadingPhoto = false);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Could not upload photo: $e')),
+        );
+      }
+    }
+  }
+
+  String? get _avatarUrl {
+    final u = FirebaseAuth.instance.currentUser?.photoURL;
+    if (_avatarUrlOverride != null && _avatarUrlOverride!.isNotEmpty) {
+      return _avatarUrlOverride;
+    }
+    return u;
+  }
+
   @override
   Widget build(BuildContext context) {
-    final avatar = FirebaseAuth.instance.currentUser?.photoURL;
+    final avatar = _avatarUrl;
     return Scaffold(
       body: Container(
         decoration: const BoxDecoration(
@@ -113,20 +195,37 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
                       backgroundColor: const Color(0xFF5C4FA1),
                       child: CircleAvatar(
                         radius: 52,
+                        key: ValueKey(avatar ?? 'placeholder'),
+                        backgroundColor: const Color(0xFFE8E0F5),
                         backgroundImage: avatar != null && avatar.isNotEmpty
                             ? NetworkImage(avatar)
-                            : const NetworkImage('https://images.unsplash.com/photo-1524504388940-b1c1722653e1?w=300'),
+                            : const NetworkImage(
+                                'https://images.unsplash.com/photo-1524504388940-b1c1722653e1?w=300',
+                              ),
                       ),
                     ),
+                    if (_uploadingPhoto)
+                      Positioned.fill(
+                        child: ClipOval(
+                          child: Container(
+                            color: Colors.black38,
+                            alignment: Alignment.center,
+                            child: const SizedBox(
+                              width: 28,
+                              height: 28,
+                              child: CircularProgressIndicator(
+                                strokeWidth: 2.5,
+                                color: Colors.white,
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
                     Positioned(
                       right: -2,
                       bottom: -2,
                       child: InkWell(
-                        onTap: () {
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            const SnackBar(content: Text('Profile photo update coming soon')),
-                          );
-                        },
+                        onTap: _uploadingPhoto ? null : _showPhotoSourcePicker,
                         child: Container(
                           width: 30,
                           height: 30,

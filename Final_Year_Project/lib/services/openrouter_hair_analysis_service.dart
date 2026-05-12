@@ -139,11 +139,11 @@ class OpenRouterHairAnalysisService {
     if (apiKey.isEmpty) {
       return OpenRouterHairAnalysisResult.error(
         'Missing OpenRouter API key.\n\n'
-        'Add OPENROUTER_API_KEY to your project `.env` (see `.env.example`) or run:\n'
-        'flutter run --dart-define=OPENROUTER_API_KEY=sk-or-v1-YOUR_KEY\n\n'
-        'You must fully restart the app (./ios_quick_run.sh) after editing `.env` — '
-        'hot reload and `flutter attach` do not update compile-time keys.\n\n'
-        'Optional: OPENROUTER_MODEL=openai/gpt-4o-mini',
+        '1) In `.env` next to pubspec.yaml set OPENROUTER_API_KEY=sk-or-v1-…\n'
+        '   (https://openrouter.ai/keys). The file is listed as a Flutter asset — '
+        'run `flutter run` again after saving.\n\n'
+        '2) Or: flutter run --dart-define=OPENROUTER_API_KEY=sk-or-v1-YOUR_KEY\n\n'
+        'Optional: OPENROUTER_MODEL=openai/gpt-4o-mini in `.env` or --dart-define.',
       );
     }
 

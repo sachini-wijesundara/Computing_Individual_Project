@@ -3,7 +3,9 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
-import 'package:image_picker/image_picker.dart';
+import 'dart:async';
+import 'dart:io';
+import 'selfie_capture_screen.dart';
 
 import '../models/product.dart';
 import '../native_lip_renderer.dart';
@@ -16,7 +18,7 @@ const _maroon = Color(0xFF7C150D);
 const _gold   = Color(0xFFDCB568);
 const _dark   = Color(0xFF121212);
 
-enum TryOnMode { live, uploadPhoto }
+enum TryOnMode { live, selfie }
 
 // ── Category descriptor ────────────────────────────────────────────────────────
 class _MakeupCat {
@@ -47,14 +49,21 @@ const _kCats = <_MakeupCat>[
 // ──────────────────────────────────────────────────────────────────────────────
 class FullMakeupTryOnScreen extends StatefulWidget {
   final TryOnMode mode;
-  const FullMakeupTryOnScreen({super.key, this.mode = TryOnMode.live});
+
+  /// Set when [mode] is [TryOnMode.selfie]: photo chosen after capture + review on the landing flow.
+  final String? initialSelfiePath;
+
+  const FullMakeupTryOnScreen({
+    super.key,
+    this.mode = TryOnMode.live,
+    this.initialSelfiePath,
+  });
 
   @override
   State<FullMakeupTryOnScreen> createState() => _FullMakeupTryOnScreenState();
 }
 
-class _FullMakeupTryOnScreenState extends State<FullMakeupTryOnScreen>
-    with SingleTickerProviderStateMixin {
+class _FullMakeupTryOnScreenState extends State<FullMakeupTryOnScreen> {
 
   // ── Native renderer ──────────────────────────────────────────────────────
   NativeLipRendererController? _nativeCtrl;
@@ -80,33 +89,51 @@ class _FullMakeupTryOnScreenState extends State<FullMakeupTryOnScreen>
   bool   _compareMode  = false;
   double _splitPos     = 0.5;
 
-  // ── Upload photo ─────────────────────────────────────────────────────────
-  String? _uploadedPath;
+  // ── Selfie mode (offline render) ─────────────────────────────────────────
+  String? _selfiePath;
+  Uint8List? _selfieRenderedPng;
+  bool _selfieBusy = false;
+  String? _selfieError;
+  final bool _mirrorSelfiePreview = true;
+  Timer? _selfieRenderDebounce;
+  /// Last path passed to native `setPhoto` (avoid re-decoding full image on every layer tap).
+  String? _photoPathSentToNative;
 
   // ── Firestore data ────────────────────────────────────────────────────────
   Set<String>               _favIds   = {};
   final Map<String, List<Product>> _products = {};
   final Map<String, bool>  _loading  = {};
 
-  // ── Pulse anim ────────────────────────────────────────────────────────────
-  late final AnimationController _pulse =
-      AnimationController(vsync: this, duration: const Duration(seconds: 2))
-        ..repeat(reverse: true);
-
   @override
   void initState() {
     super.initState();
     _loadFavs();
-    for (final c in _kCats) _loadProducts(c);
-    if (widget.mode == TryOnMode.uploadPhoto) {
-      WidgetsBinding.instance.addPostFrameCallback((_) => _pickPhoto());
+    for (final c in _kCats) {
+      _loadProducts(c);
+    }
+    if (widget.mode == TryOnMode.selfie) {
+      final p = widget.initialSelfiePath?.trim();
+      if (p != null && p.isNotEmpty) {
+        _selfiePath = p;
+      } else {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (!mounted) return;
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('No selfie was selected. Take a photo first, then tap Use photo.'),
+              behavior: SnackBarBehavior.floating,
+            ),
+          );
+          Navigator.of(context).maybePop();
+        });
+      }
     }
   }
 
   @override
   void dispose() {
+    _selfieRenderDebounce?.cancel();
     _nativeCtrl?.dispose();
-    _pulse.dispose();
     super.dispose();
   }
 
@@ -140,9 +167,42 @@ class _FullMakeupTryOnScreenState extends State<FullMakeupTryOnScreen>
     }
   }
 
-  Future<void> _pickPhoto() async {
-    final file = await ImagePicker().pickImage(source: ImageSource.gallery, imageQuality: 90);
-    if (file != null && mounted) setState(() => _uploadedPath = file.path);
+  Future<void> _takeSelfie() async {
+    final ctrl = _nativeCtrl;
+    // Ensure no live camera session is holding the camera before selfie capture.
+    if (ctrl != null) {
+      await ctrl.stop();
+    }
+    if (!mounted) return;
+
+    await Future<void>.delayed(const Duration(milliseconds: 150));
+    if (!mounted) return;
+    final path = await SelfieCaptureScreen.capture(context);
+    if (path == null || !mounted) {
+      if (ctrl != null) {
+        if (widget.mode != TryOnMode.selfie) {
+          await ctrl.start();
+        } else if (_selfiePath != null) {
+          await ctrl.setPhoto(imageFilePath: _selfiePath!);
+          _photoPathSentToNative = _selfiePath;
+        }
+        await _applyEffect();
+      }
+      return;
+    }
+    setState(() {
+      _selfiePath = path;
+      _selfieRenderedPng = null;
+      _selfieError = null;
+      _photoPathSentToNative = null;
+    });
+    if (ctrl == null) {
+      setState(() => _selfieError = 'Renderer not ready yet. Go back and open selfie mode again.');
+      return;
+    }
+    await ctrl.setPhoto(imageFilePath: path);
+    _photoPathSentToNative = path;
+    await _applyEffect();
   }
 
   Future<void> _toggleFav(Product p) async {
@@ -179,7 +239,7 @@ class _FullMakeupTryOnScreenState extends State<FullMakeupTryOnScreen>
     return 8;
   }
 
-  void _applyEffect() {
+  Future<void> _applyEffect() async {
     final ctrl = _nativeCtrl;
     if (ctrl == null) return;
 
@@ -204,7 +264,10 @@ class _FullMakeupTryOnScreenState extends State<FullMakeupTryOnScreen>
     });
 
     if (entries.isEmpty) {
-      ctrl.setLook(layers: const [], isCompareMode: _compareMode);
+      await ctrl.setLook(layers: const [], isCompareMode: _compareMode);
+      if (widget.mode == TryOnMode.selfie) {
+        setState(() => _selfieRenderedPng = null);
+      }
       return;
     }
 
@@ -216,7 +279,48 @@ class _FullMakeupTryOnScreenState extends State<FullMakeupTryOnScreen>
         'intensity': _intensity,
       });
     }
-    ctrl.setLook(layers: layers, isCompareMode: _compareMode);
+    await ctrl.setLook(layers: layers, isCompareMode: _compareMode);
+    if (widget.mode == TryOnMode.selfie) {
+      _scheduleSelfieRender();
+    }
+  }
+
+  void _scheduleSelfieRender() {
+    _selfieRenderDebounce?.cancel();
+    _selfieRenderDebounce = Timer(const Duration(milliseconds: 180), () {
+      _selfieRenderDebounce = null;
+      if (!mounted) return;
+      _renderSelfie();
+    });
+  }
+
+  Future<void> _renderSelfie() async {
+    final ctrl = _nativeCtrl;
+    final path = _selfiePath;
+    if (ctrl == null || path == null) return;
+    if (!mounted) return;
+    setState(() {
+      _selfieBusy = true;
+      _selfieError = null;
+    });
+    try {
+      if (_photoPathSentToNative != path) {
+        await ctrl.setPhoto(imageFilePath: path);
+        _photoPathSentToNative = path;
+      }
+      final png = await ctrl.renderPhoto();
+      if (!mounted) return;
+      setState(() {
+        _selfieRenderedPng = png;
+        _selfieBusy = false;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _selfieBusy = false;
+        _selfieError = e.toString();
+      });
+    }
   }
 
   Color _hex(String h) {
@@ -269,33 +373,94 @@ class _FullMakeupTryOnScreenState extends State<FullMakeupTryOnScreen>
 
   // ── Camera ────────────────────────────────────────────────────────────────
   Widget _buildCamera() {
-    if (widget.mode == TryOnMode.uploadPhoto && _uploadedPath != null) {
-      return Image.asset(_uploadedPath!, fit: BoxFit.cover,
-        errorBuilder: (_, __, ___) => const ColoredBox(color: Colors.black));
+    if (widget.mode == TryOnMode.selfie && _selfiePath != null) {
+      return Stack(children: [
+        // Keep native controller alive for setPhoto/renderPhoto while selfie image is shown.
+        if (_shouldUseNative)
+          Positioned.fill(
+            child: Opacity(
+              opacity: 0,
+              child: NativeLipRendererView(
+                onViewCreated: _onNativeViewCreated,
+                enableDebugOverlay: _nativeDebug,
+              ),
+            ),
+          ),
+        Positioned.fill(
+          child: _selfieRenderedPng != null
+              ? _buildMirroredIfNeeded(Image.memory(_selfieRenderedPng!, fit: BoxFit.cover))
+              : _buildMirroredIfNeeded(Image.file(
+                  File(_selfiePath!),
+                  fit: BoxFit.cover,
+                  errorBuilder: (_, __, ___) => Center(
+                    child: Text(
+                      'Photo load failed. Please retake selfie.',
+                      style: TextStyle(color: Colors.white.withValues(alpha: 0.92)),
+                      textAlign: TextAlign.center,
+                    ),
+                  ),
+                )),
+        ),
+        // Native view is created once in live mode; in selfie mode we rely on the existing controller.
+        if (_selfieBusy)
+          const Positioned(
+            left: 0,
+            right: 0,
+            top: 120,
+            child: Center(child: CircularProgressIndicator(color: Colors.white)),
+          ),
+        if (_selfieError != null)
+          Positioned(
+            left: 16,
+            right: 16,
+            top: 120,
+            child: Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: Colors.red.withValues(alpha: 0.8),
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: Text(_selfieError!, style: const TextStyle(color: Colors.white)),
+            ),
+          ),
+      ]);
     }
     if (_shouldUseNative) {
       return NativeLipRendererView(
-        onViewCreated: (ctrl) {
-          _nativeCtrl = ctrl;
-          ctrl.listen((e) {
-            if (!mounted) return;
-            setState(() {
-              if (e.type == 'ready') {
-                _nativeReady = true;
-                _applyEffect();
-              }
-              if (e.type == 'fps') _nativeFps = e.fps ?? 0;
-            });
-          });
-          ctrl.start();
-          ctrl.setDebug(showLandmarks: false);
-        },
+        onViewCreated: _onNativeViewCreated,
         enableDebugOverlay: _nativeDebug,
       );
     }
     return const ColoredBox(color: _dark,
       child: Center(child: Text('Camera unavailable',
           style: TextStyle(color: Colors.white38))));
+  }
+
+  void _onNativeViewCreated(NativeLipRendererController ctrl) {
+    _nativeCtrl = ctrl;
+    ctrl.listen((e) {
+      if (!mounted) return;
+      setState(() {
+        if (e.type == 'ready') {
+          _nativeReady = true;
+          _applyEffect();
+        }
+        if (e.type == 'fps') _nativeFps = e.fps ?? 0;
+      });
+    });
+    if (widget.mode != TryOnMode.selfie) {
+      ctrl.start();
+    }
+    ctrl.setDebug(showLandmarks: false);
+  }
+
+  Widget _buildMirroredIfNeeded(Widget child) {
+    if (!_mirrorSelfiePreview) return child;
+    return Transform(
+      alignment: Alignment.center,
+      transform: Matrix4.identity()..scale(-1.0, 1.0, 1.0),
+      child: child,
+    );
   }
 
   // ── Compare overlay ───────────────────────────────────────────────────────
@@ -334,27 +499,49 @@ class _FullMakeupTryOnScreenState extends State<FullMakeupTryOnScreen>
   Widget _buildTopBar() {
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
-      child: Row(children: [
-        IconButton(
-          icon: const Icon(Icons.arrow_back_ios_rounded, color: Colors.white, size: 20),
-          onPressed: () => Navigator.of(context).maybePop(),
-        ),
-        const Spacer(),
-        const Text('VIRTUAL TRY-ON',
-          style: TextStyle(color: Colors.white, fontSize: 14,
-              fontWeight: FontWeight.w800, letterSpacing: 1.2)),
-        const Spacer(),
-        Hud(ready: _nativeReady, fps: _nativeFps, frames: 0, det: 0),
-        IconButton(
-          icon: Icon(
-            _nativeDebug ? Icons.bug_report : Icons.bug_report_outlined,
-            color: Colors.white60, size: 20),
-          onPressed: () {
-            setState(() => _nativeDebug = !_nativeDebug);
-            _nativeCtrl?.setDebug(showLandmarks: _nativeDebug);
-          },
-        ),
-      ]),
+      child: Row(
+        children: [
+          IconButton(
+            icon: const Icon(Icons.arrow_back_ios_rounded, color: Colors.white, size: 20),
+            onPressed: () => Navigator.of(context).maybePop(),
+          ),
+          Expanded(
+            child: Text(
+              'VIRTUAL TRY-ON',
+              textAlign: TextAlign.center,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 14,
+                fontWeight: FontWeight.w800,
+                letterSpacing: 1.2,
+              ),
+            ),
+          ),
+          // Live mode: status + debug. Selfie/photo mode: skip Hud + debug (saves width; fps N/A).
+          if (widget.mode != TryOnMode.selfie) ...[
+            Hud(ready: _nativeReady, fps: _nativeFps, frames: 0, det: 0),
+            IconButton(
+              icon: Icon(
+                _nativeDebug ? Icons.bug_report : Icons.bug_report_outlined,
+                color: Colors.white60,
+                size: 20,
+              ),
+              onPressed: () {
+                setState(() => _nativeDebug = !_nativeDebug);
+                _nativeCtrl?.setDebug(showLandmarks: _nativeDebug);
+              },
+            ),
+          ],
+          if (widget.mode == TryOnMode.selfie && _selfiePath != null)
+            IconButton(
+              tooltip: 'Change photo',
+              icon: const Icon(Icons.photo_camera_outlined, color: Colors.white, size: 22),
+              onPressed: _selfieBusy ? null : _takeSelfie,
+            ),
+        ],
+      ),
     );
   }
 

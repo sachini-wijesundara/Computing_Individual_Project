@@ -8,7 +8,10 @@ import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
+import android.graphics.Path
 import android.graphics.PointF
+import android.graphics.PorterDuff
+import android.graphics.PorterDuffXfermode
 import android.graphics.RectF
 import android.opengl.GLES20
 import android.opengl.GLSurfaceView
@@ -46,6 +49,7 @@ import com.google.mediapipe.tasks.vision.imagesegmenter.ImageSegmenter
 import com.google.mediapipe.tasks.vision.imagesegmenter.ImageSegmenterResult
 import com.google.mediapipe.tasks.vision.handlandmarker.HandLandmarker
 import com.google.mediapipe.tasks.vision.handlandmarker.HandLandmarkerResult
+import java.io.ByteArrayOutputStream
 import java.io.FileInputStream
 import java.io.File
 import java.io.FileOutputStream
@@ -274,6 +278,46 @@ private class HairMaskOverlayView(context: Context) : View(context) {
     val bmp = hairBitmap ?: return
     canvas.drawBitmap(bmp, null, RectF(0f, 0f, width.toFloat(), height.toFloat()), paint)
   }
+}
+
+// Shared by NailPolishRenderer and LipRendererPlatformView (hair / photo paths).
+private fun rgbToHSL(r: Float, g: Float, b: Float): Triple<Float, Float, Float> {
+  val maxC = max(max(r, g), b)
+  val minC = min(min(r, g), b)
+  val delta = maxC - minC
+  val l = (maxC + minC) / 2f
+  if (delta < 0.001f) return Triple(0f, 0f, l)
+  val s = delta / (1f - kotlin.math.abs(2f * l - 1f))
+  val h = when {
+    maxC == r -> {
+      var h0 = (g - b) / delta
+      if (h0 < 0) h0 += 6f
+      h0
+    }
+    maxC == g -> (b - r) / delta + 2f
+    else -> (r - g) / delta + 4f
+  }
+  return Triple(h / 6f, s, l)
+}
+
+private fun hslToRGB(h: Float, s: Float, l: Float): Triple<Float, Float, Float> {
+  if (s < 0.001f) return Triple(l, l, l)
+  val c = (1f - kotlin.math.abs(2f * l - 1f)) * s
+  val x = c * (1f - kotlin.math.abs(((h * 6f) % 2f) - 1f))
+  val m = l - c / 2f
+  val (r1, g1, b1) = when (((h * 6f).toInt()) % 6) {
+    0 -> Triple(c, x, 0f)
+    1 -> Triple(x, c, 0f)
+    2 -> Triple(0f, c, x)
+    3 -> Triple(0f, x, c)
+    4 -> Triple(x, 0f, c)
+    else -> Triple(c, 0f, x)
+  }
+  return Triple(
+    (r1 + m).coerceIn(0f, 1f),
+    (g1 + m).coerceIn(0f, 1f),
+    (b1 + m).coerceIn(0f, 1f)
+  )
 }
 
 // ─── TFLite nail-polish renderer ──────────────────────────────────────────────
@@ -694,6 +738,13 @@ private class LipRendererPlatformView(
   private var currentNailArtStyle = 0
   private var currentNailShape = 0
 
+  /** Offline photo try-on (setPhoto + renderPhoto); only touched from [photoExecutor]. */
+  private val photoExecutor: ExecutorService = Executors.newSingleThreadExecutor()
+  private var photoBitmap: Bitmap? = null
+  private var photoFaceLandmarker: FaceLandmarker? = null
+  private var useLayeredLook = false
+  private var lookLayers: List<Triple<Int, Float, String>> = emptyList()
+
   init {
     methodChannel.setMethodCallHandler(this)
     eventChannel.setStreamHandler(this)
@@ -716,6 +767,13 @@ private class LipRendererPlatformView(
     eventChannel.setStreamHandler(null)
     methodChannel.setMethodCallHandler(null)
     cameraExecutor.shutdown()
+    photoExecutor.execute {
+      photoFaceLandmarker?.close()
+      photoFaceLandmarker = null
+      photoBitmap?.recycle()
+      photoBitmap = null
+    }
+    photoExecutor.shutdown()
     hairSegmenter?.close()
     hairSegmenter = null
     faceLandmarker?.close()
@@ -742,6 +800,8 @@ private class LipRendererPlatformView(
 
         val wasNails = currentCategory == "cmd_nails"
         currentCategory = category
+        useLayeredLook = false
+        lookLayers = emptyList()
         isCompareMode = compare
         currentShadeColor = shade
         currentIntensity = intensity
@@ -801,8 +861,57 @@ private class LipRendererPlatformView(
           layers.add(Triple(shade, intensity, category))
         }
         val capped = if (layers.size > 10) layers.take(10) else layers
+        lookLayers = capped
+        useLayeredLook = true
         glOverlay.setLook(capped, compare)
         result.success(null)
+      }
+      "setPhoto" -> {
+        val args = call.arguments as? Map<*, *>
+        val path = args?.get("imageFilePath") as? String
+        photoExecutor.execute {
+          try {
+            if (path.isNullOrEmpty()) {
+              photoBitmap?.recycle()
+              photoBitmap = null
+              android.os.Handler(android.os.Looper.getMainLooper()).post { result.success(null) }
+              return@execute
+            }
+            val decoded = android.graphics.BitmapFactory.decodeFile(path)
+            if (decoded == null) {
+              android.os.Handler(android.os.Looper.getMainLooper()).post {
+                result.error("decode", "Could not decode image", null)
+              }
+              return@execute
+            }
+            val scaled = downscalePhotoBitmap(decoded, 1280)
+            if (scaled !== decoded) decoded.recycle()
+            photoBitmap?.recycle()
+            photoBitmap = scaled
+            android.os.Handler(android.os.Looper.getMainLooper()).post { result.success(null) }
+          } catch (t: Throwable) {
+            Log.e("LipRenderer", "setPhoto", t)
+            android.os.Handler(android.os.Looper.getMainLooper()).post {
+              result.error("setPhoto", t.message, null)
+            }
+          }
+        }
+      }
+      "renderPhoto" -> {
+        photoExecutor.execute {
+          try {
+            val bytes = renderPhotoToPngBytes()
+            android.os.Handler(android.os.Looper.getMainLooper()).post {
+              if (bytes != null) result.success(bytes)
+              else result.error("photo", "No photo or face not found.", null)
+            }
+          } catch (t: Throwable) {
+            Log.e("LipRenderer", "renderPhoto", t)
+            android.os.Handler(android.os.Looper.getMainLooper()).post {
+              result.error("photo", t.message, null)
+            }
+          }
+        }
       }
       "setDebug" -> {
         val show = (call.arguments as? Map<*, *>)?.get("showLandmarks") as? Boolean ?: false
@@ -1384,41 +1493,165 @@ private class LipRendererPlatformView(
     return bmp
   }
 
-  // ─── HSL helpers ──────────────────────────────────────────────────────────
-
-  private fun rgbToHSL(r: Float, g: Float, b: Float): Triple<Float, Float, Float> {
-    val maxC  = max(max(r, g), b)
-    val minC  = min(min(r, g), b)
-    val delta = maxC - minC
-    val l     = (maxC + minC) / 2f
-    if (delta < 0.001f) return Triple(0f, 0f, l)
-    val s = delta / (1f - kotlin.math.abs(2f * l - 1f))
-    var h = when {
-      maxC == r -> { var h0 = (g - b) / delta; if (h0 < 0) h0 += 6f; h0 }
-      maxC == g -> (b - r) / delta + 2f
-      else      -> (r - g) / delta + 4f
-    }
-    return Triple(h / 6f, s, l)
+  private fun downscalePhotoBitmap(src: Bitmap, maxEdge: Int): Bitmap {
+    val mw = max(src.width, src.height)
+    if (mw <= maxEdge) return src
+    val scale = maxEdge.toFloat() / mw
+    val nw = (src.width * scale).roundToInt().coerceAtLeast(1)
+    val nh = (src.height * scale).roundToInt().coerceAtLeast(1)
+    return Bitmap.createScaledBitmap(src, nw, nh, true)
   }
 
-  private fun hslToRGB(h: Float, s: Float, l: Float): Triple<Float, Float, Float> {
-    if (s < 0.001f) return Triple(l, l, l)
-    val c  = (1f - kotlin.math.abs(2f * l - 1f)) * s
-    val x  = c * (1f - kotlin.math.abs(((h * 6f) % 2f) - 1f))
-    val m  = l - c / 2f
-    val (r1, g1, b1) = when (((h * 6f).toInt()) % 6) {
-      0    -> Triple(c, x, 0f)
-      1    -> Triple(x, c, 0f)
-      2    -> Triple(0f, c, x)
-      3    -> Triple(0f, x, c)
-      4    -> Triple(x, 0f, c)
-      else -> Triple(c, 0f, x)
+  private fun ensurePhotoFaceLandmarker(): FaceLandmarker? {
+    if (photoFaceLandmarker != null) return photoFaceLandmarker
+    return try {
+      val baseOptions = BaseOptions.builder()
+        .setModelAssetPath("flutter_assets/assets/models/face_landmarker.task")
+        .build()
+      val options = FaceLandmarker.FaceLandmarkerOptions.builder()
+        .setBaseOptions(baseOptions)
+        .setRunningMode(RunningMode.IMAGE)
+        .setNumFaces(1)
+        .build()
+      photoFaceLandmarker = FaceLandmarker.createFromOptions(appContext, options)
+      photoFaceLandmarker
+    } catch (t: Throwable) {
+      Log.e("LipRenderer", "photo FaceLandmarker", t)
+      null
     }
-    return Triple(
-      (r1 + m).coerceIn(0f, 1f),
-      (g1 + m).coerceIn(0f, 1f),
-      (b1 + m).coerceIn(0f, 1f)
-    )
+  }
+
+  private fun isFoundationCategory(cat: String): Boolean {
+    val c = cat.lowercase()
+    return c == "cmd_face" || c == "cmd_foundation" || c == "cmd_concealer" ||
+      c.contains("foundation")
+  }
+
+  private fun lipPixelPaths(landmarks: List<NormalizedLandmark>, w: Int, h: Int): Pair<Path, Path> {
+    val outerLipIdx = intArrayOf(61, 146, 91, 181, 84, 17, 314, 405, 321, 375, 291, 308, 324, 318, 402, 317, 14, 87, 178, 88)
+    val innerLipIdx = intArrayOf(78, 95, 88, 178, 87, 14, 317, 402, 318, 324)
+    val outer = Path()
+    outerLipIdx.forEachIndexed { i, idx ->
+      val lm = landmarks[idx]
+      val x = lm.x() * w
+      val y = lm.y() * h
+      if (i == 0) outer.moveTo(x, y) else outer.lineTo(x, y)
+    }
+    outer.close()
+    val inner = Path()
+    innerLipIdx.forEachIndexed { i, idx ->
+      val lm = landmarks[idx]
+      val x = lm.x() * w
+      val y = lm.y() * h
+      if (i == 0) inner.moveTo(x, y) else inner.lineTo(x, y)
+    }
+    inner.close()
+    return outer to inner
+  }
+
+  private fun eyePixelPath(landmarks: List<NormalizedLandmark>, indices: IntArray, w: Int, h: Int): Path {
+    val p = Path()
+    indices.forEachIndexed { i, idx ->
+      val lm = landmarks[idx]
+      val x = lm.x() * w
+      val y = lm.y() * h
+      if (i == 0) p.moveTo(x, y) else p.lineTo(x, y)
+    }
+    p.close()
+    return p
+  }
+
+  private fun faceFoundationPixelPath(landmarks: List<NormalizedLandmark>, w: Int, h: Int): Path {
+    val faceOvalIdx = intArrayOf(338, 297, 332, 284, 251, 389, 356, 454, 323, 361, 288, 397, 365, 379, 378, 400, 377, 152, 148, 176, 149, 150, 136, 172, 58, 132, 93, 234, 127, 162, 21, 54, 103, 67, 109, 151, 10)
+    val pts = foundationFaceOvalPoints(landmarks, faceOvalIdx)
+    val p = Path()
+    pts.forEachIndexed { i, pt ->
+      val x = pt.x * w
+      val y = pt.y * h
+      if (i == 0) p.moveTo(x, y) else p.lineTo(x, y)
+    }
+    p.close()
+    return p
+  }
+
+  private fun drawLipstickPhotoLayer(canvas: Canvas, landmarks: List<NormalizedLandmark>, color: Int, intensity: Float, w: Int, h: Int) {
+    val (outer, inner) = lipPixelPaths(landmarks, w, h)
+    val alpha = (255 * 0.6f * intensity.coerceIn(0f, 1f)).toInt().coerceIn(18, 245)
+    val p = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+      style = Paint.Style.FILL
+      this.color = Color.argb(alpha, Color.red(color), Color.green(color), Color.blue(color))
+    }
+    canvas.drawPath(outer, p)
+    p.xfermode = PorterDuffXfermode(PorterDuff.Mode.DST_OUT)
+    canvas.drawPath(inner, p)
+    p.xfermode = null
+  }
+
+  private fun drawFoundationPhotoLayer(canvas: Canvas, landmarks: List<NormalizedLandmark>, color: Int, intensity: Float, w: Int, h: Int) {
+    val facePath = faceFoundationPixelPath(landmarks, w, h)
+    val (outerLip, _) = lipPixelPaths(landmarks, w, h)
+    val leftEyeIdx  = intArrayOf(33, 7, 163, 144, 145, 153, 154, 155, 133, 173, 157, 158, 159, 160, 161, 246)
+    val rightEyeIdx = intArrayOf(362, 382, 381, 380, 374, 373, 390, 249, 263, 466, 388, 387, 386, 385, 384, 398)
+    val leftEye = eyePixelPath(landmarks, leftEyeIdx, w, h)
+    val rightEye = eyePixelPath(landmarks, rightEyeIdx, w, h)
+    val alpha = (255 * 0.3f * intensity.coerceIn(0f, 1f)).toInt().coerceIn(12, 200)
+    val p = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+      style = Paint.Style.FILL
+      this.color = Color.argb(alpha, Color.red(color), Color.green(color), Color.blue(color))
+    }
+    canvas.drawPath(facePath, p)
+    p.xfermode = PorterDuffXfermode(PorterDuff.Mode.DST_OUT)
+    canvas.drawPath(leftEye, p)
+    canvas.drawPath(rightEye, p)
+    canvas.drawPath(outerLip, p)
+    p.xfermode = null
+  }
+
+  private fun drawPhotoCategory(canvas: Canvas, landmarks: List<NormalizedLandmark>, category: String, shade: Int, intensity: Float, w: Int, h: Int) {
+    val c = category.lowercase()
+    when {
+      c == "cmd_haircolor" || c == "cmd_hairstyle" -> { /* hair is live-camera only */ }
+      isFoundationCategory(c) -> drawFoundationPhotoLayer(canvas, landmarks, shade, intensity, w, h)
+      else -> drawLipstickPhotoLayer(canvas, landmarks, shade, intensity, w, h)
+    }
+  }
+
+  private fun renderPhotoToPngBytes(): ByteArray? {
+    val bmp = photoBitmap ?: return null
+    val lm = ensurePhotoFaceLandmarker() ?: return null
+    val mpImage = BitmapImageBuilder(bmp).build()
+    val result = try {
+      lm.detect(mpImage)
+    } catch (t: Throwable) {
+      Log.e("LipRenderer", "detect photo", t)
+      null
+    } ?: return null
+    val landmarks = result.faceLandmarks().firstOrNull() ?: return null
+
+    val out = bmp.copy(Bitmap.Config.ARGB_8888, true)
+    val canvas = Canvas(out)
+    val w = out.width
+    val h = out.height
+
+    if (isCompareMode) {
+      val split = currentSplitPosition.coerceIn(0.05f, 0.95f)
+      canvas.save()
+      canvas.clipRect(split * w, 0f, w.toFloat(), h.toFloat())
+    }
+
+    if (useLayeredLook && lookLayers.isNotEmpty()) {
+      for (layer in lookLayers) {
+        drawPhotoCategory(canvas, landmarks, layer.third, layer.first, layer.second, w, h)
+      }
+    } else {
+      drawPhotoCategory(canvas, landmarks, currentCategory, currentShadeColor, currentIntensity, w, h)
+    }
+
+    if (isCompareMode) canvas.restore()
+
+    val baos = ByteArrayOutputStream()
+    if (!out.compress(Bitmap.CompressFormat.PNG, 92, baos)) return null
+    return baos.toByteArray()
   }
 
   private fun ensureLandmarker(): Boolean {

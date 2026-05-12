@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'edit_profile_screen.dart';
 import 'order_history_screen.dart';
 import 'user_feedback_screen.dart';
+import 'wishlist_screen.dart';
 import '../services/firebase_auth_service.dart';
 
 const _bgTop = Color(0xFFF5F5F5);
@@ -179,6 +180,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         onTap: () => Navigator.of(context).push(
                           MaterialPageRoute<void>(
                             builder: (_) => const OrderHistoryScreen(showBackButton: true),
+                          ),
+                        ),
+                      ),
+                      _SettingsTile(
+                        icon: Icons.favorite_outline_rounded,
+                        label: 'Wishlist',
+                        onTap: () => Navigator.of(context).push(
+                          MaterialPageRoute<void>(
+                            builder: (_) => const WishlistScreen(showBackButton: true),
                           ),
                         ),
                       ),

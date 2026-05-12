@@ -1,6 +1,7 @@
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
+import 'edit_profile_screen.dart';
 import 'order_history_screen.dart';
 
 const _bgTop = Color(0xFFF5F5F5);
@@ -30,12 +31,18 @@ class ProfileScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final user = FirebaseAuth.instance.currentUser;
-    final name = (user?.displayName?.trim().isNotEmpty ?? false) ? user!.displayName!.trim() : 'Melissa Peters';
-    final email = user?.email ?? 'melpeters@gmail.com';
-    final avatar = user?.photoURL;
+    return StreamBuilder<User?>(
+      stream: FirebaseAuth.instance.userChanges(),
+      initialData: FirebaseAuth.instance.currentUser,
+      builder: (context, snap) {
+        final user = snap.data;
+        final name = (user?.displayName?.trim().isNotEmpty ?? false)
+            ? user!.displayName!.trim()
+            : 'Melissa Peters';
+        final email = user?.email ?? 'melpeters@gmail.com';
+        final avatar = user?.photoURL;
 
-    return Container(
+        return Container(
       decoration: const BoxDecoration(
         gradient: LinearGradient(
           begin: Alignment.topCenter,
@@ -81,9 +88,12 @@ class ProfileScreen extends StatelessWidget {
                 backgroundColor: const Color(0xFF5C4FA1),
                 child: CircleAvatar(
                   radius: 52,
+                  key: ValueKey(avatar ?? 'none'),
                   backgroundImage: avatar != null && avatar.isNotEmpty
                       ? NetworkImage(avatar)
-                      : const NetworkImage('https://images.unsplash.com/photo-1524504388940-b1c1722653e1?w=300'),
+                      : const NetworkImage(
+                          'https://images.unsplash.com/photo-1524504388940-b1c1722653e1?w=300',
+                        ),
                 ),
               ),
             ),
@@ -102,7 +112,32 @@ class ProfileScreen extends StatelessWidget {
             const SizedBox(height: 12),
             _label('Country/Region'),
             _readOnlyField('Sri Lanka'),
-            const SizedBox(height: 24),
+            const SizedBox(height: 20),
+            Material(
+              color: _fieldFill,
+              borderRadius: BorderRadius.circular(7),
+              clipBehavior: Clip.antiAlias,
+              child: ListTile(
+                leading: const Icon(Icons.edit_outlined, color: _maroon),
+                title: const Text(
+                  'Edit profile',
+                  style: TextStyle(fontWeight: FontWeight.w700, color: _ink),
+                ),
+                subtitle: Text(
+                  'Change your name or profile photo',
+                  style: TextStyle(fontSize: 13, color: _ink.withValues(alpha: 0.55)),
+                ),
+                trailing: const Icon(Icons.chevron_right_rounded, color: _ink),
+                onTap: () {
+                  Navigator.of(context).push(
+                    MaterialPageRoute<void>(
+                      builder: (_) => const EditProfileScreen(),
+                    ),
+                  );
+                },
+              ),
+            ),
+            const SizedBox(height: 16),
             Material(
               color: _fieldFill,
               borderRadius: BorderRadius.circular(7),
@@ -152,6 +187,8 @@ class ProfileScreen extends StatelessWidget {
           ],
         ),
       ),
+    );
+      },
     );
   }
 

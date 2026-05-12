@@ -1,5 +1,6 @@
 import 'package:la_vogue_vista/widgets/firebase_image.dart';
 import 'package:cached_network_image/cached_network_image.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
@@ -8,6 +9,7 @@ import '../providers/cart_provider.dart';
 import '../models/product.dart';
 import '../models/product_review.dart';
 import '../services/firestore_service.dart';
+import '../utils/price_format.dart';
 import 'live_tryon_screen.dart';
 import 'cart_screen.dart';
 
@@ -15,9 +17,6 @@ import 'cart_screen.dart';
 const _maroon = Color(0xFF7C150D);
 const _ink    = Color(0xFF1F1F1F);
 const _muted  = Color(0xFF8A8A8A);
-
-String _rs(num n) =>
-    'Rs. ${n.toStringAsFixed(0).replaceAll(RegExp(r'(\d)(?=(\d{3})+(?!\d))'), r'$1,')}';
 
 Icon _star(double r, int i) {
   final p = i + 1;
@@ -396,13 +395,48 @@ class _ProductDetailPageState extends State<ProductDetailPage> {
         ),
         centerTitle: true,
         actions: [
-          IconButton(
-            icon: const Icon(Icons.favorite_border_rounded, color: _maroon),
-            onPressed: () async {
+          Builder(
+            builder: (context) {
               final uid = FirebaseAuth.instance.currentUser?.uid;
-              if (uid != null) {
-                await FirestoreDb.instance.toggleFavourite(uid, p.id);
+              if (uid == null) {
+                return IconButton(
+                  icon: const Icon(Icons.favorite_border_rounded, color: _maroon),
+                  onPressed: () {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(
+                        content: Text('Sign in to save items to your wishlist.'),
+                        behavior: SnackBarBehavior.floating,
+                      ),
+                    );
+                  },
+                );
               }
+              return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+                stream: FirebaseFirestore.instance.collection('users').doc(uid).snapshots(),
+                builder: (context, snap) {
+                  final favs = snap.hasData
+                      ? List<String>.from(snap.data!.data()?['favourites'] ?? [])
+                      : <String>[];
+                  final isFav = favs.contains(p.id);
+                  return IconButton(
+                    icon: Icon(
+                      isFav ? Icons.favorite_rounded : Icons.favorite_border_rounded,
+                      color: _maroon,
+                    ),
+                    onPressed: () async {
+                      await FirestoreDb.instance.toggleFavourite(uid, p.id);
+                      if (!context.mounted) return;
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(
+                          content: Text(isFav ? 'Removed from wishlist' : 'Saved to wishlist'),
+                          behavior: SnackBarBehavior.floating,
+                          duration: const Duration(seconds: 2),
+                        ),
+                      );
+                    },
+                  );
+                },
+              );
             },
           ),
         ],
@@ -484,7 +518,7 @@ class _ProductDetailPageState extends State<ProductDetailPage> {
 
           // ── Price ─────────────────────────────────────────────────────────
           Text(
-            _rs(p.price),
+            formatRs(p.price),
             style: const TextStyle(
                 fontSize: 24, fontWeight: FontWeight.w900, color: _ink),
           ),

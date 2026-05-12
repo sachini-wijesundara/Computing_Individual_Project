@@ -4,6 +4,7 @@ import 'package:url_launcher/url_launcher.dart';
 
 import '../services/delivery_staff_service.dart';
 import 'delivery_staff_proof_screen.dart';
+import '../../utils/price_format.dart';
 
 class DeliveryStaffOrderDetailScreen extends StatefulWidget {
   final QueryDocumentSnapshot<Map<String, dynamic>> orderDoc;
@@ -1013,10 +1014,10 @@ class _DeliveryStaffOrderDetailScreenState
   String _totalText(Map<String, dynamic> data) {
     for (final k in const ['total', 'orderTotal', 'grandTotal', 'amount']) {
       final v = data[k];
-      if (v is num) return 'Rs ${v.toStringAsFixed(0)}';
+      if (v is num) return formatRs(v);
       if (v is String) {
         final p = double.tryParse(v);
-        if (p != null) return 'Rs ${p.toStringAsFixed(0)}';
+        if (p != null) return formatRs(p);
       }
     }
     return '-';

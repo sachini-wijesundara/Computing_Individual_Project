@@ -2,23 +2,9 @@
 //
 // Hair Color Live Try-On Screen
 //
-// Live camera mode:  MediaPipe ImageSegmenter (native) → pixel-accurate mask →
-//                    HSL color blend overlay on camera preview.
-//
-// Uploaded photo mode: tflite_flutter Interpreter runs hair_segmenter.tflite
-//                      on the static image → per-pixel mask → CustomPainter
-//                      with BlendMode.color for realistic recolouring.
+// Live camera: MediaPipe ImageSegmenter (native) → hair mask → HSL tint on preview.
 
-import 'dart:io';
-import 'dart:math' as math;
-import 'dart:typed_data';
-import 'dart:ui' as ui;
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
-import 'package:image_picker/image_picker.dart';
-import 'package:image/image.dart' as img;
-import 'package:tflite_flutter/tflite_flutter.dart';
 import '../native_lip_renderer.dart';
 
 // ─── Color palette ────────────────────────────────────────────────────────────
@@ -197,204 +183,6 @@ const _hairCategories = [
   ]),
 ];
 
-// ─── Isolate payload for hair segmentation ───────────────────────────────────
-class _SegmentRequest {
-  final String imagePath;
-  final Uint8List modelBytes; // model bytes pre-loaded on main thread
-  final int targetColorValue;
-  final double intensity;
-  const _SegmentRequest(this.imagePath, this.modelBytes, this.targetColorValue, this.intensity);
-}
-
-class _SegmentResult {
-  final Uint8List? rgbaBytes; // RGBA bytes for a ui.Image
-  final int width;
-  final int height;
-  const _SegmentResult(this.rgbaBytes, this.width, this.height);
-}
-
-// ─── HSL helpers (top-level, available in isolate) ───────────────────────────
-
-/// Returns named record (h, s, l) all in [0, 1].
-({double h, double s, double l}) _rgbToHSL(double r, double g, double b) {
-  final maxC  = math.max(math.max(r, g), b);
-  final minC  = math.min(math.min(r, g), b);
-  final delta = maxC - minC;
-  final l     = (maxC + minC) / 2.0;
-
-  if (delta < 0.001) return (h: 0, s: 0, l: l);
-
-  final s = delta / (1.0 - (2.0 * l - 1.0).abs());
-  double h;
-  if (maxC == r) {
-    h = ((g - b) / delta) % 6.0;
-    if (h < 0) h += 6.0;
-  } else if (maxC == g) {
-    h = (b - r) / delta + 2.0;
-  } else {
-    h = (r - g) / delta + 4.0;
-  }
-  return (h: h / 6.0, s: s, l: l);
-}
-
-/// Returns named record (r, g, b) all in [0, 1].
-({double r, double g, double b}) _hslToRGB(double h, double s, double l) {
-  if (s < 0.001) return (r: l, g: l, b: l);
-  final c   = (1.0 - (2.0 * l - 1.0).abs()) * s;
-  final x   = c * (1.0 - ((h * 6.0) % 2.0 - 1.0).abs());
-  final m   = l - c / 2.0;
-  final seg = (h * 6.0).toInt() % 6;
-  final double r1, g1, b1;
-  switch (seg) {
-    case 0: r1 = c; g1 = x; b1 = 0;
-    case 1: r1 = x; g1 = c; b1 = 0;
-    case 2: r1 = 0; g1 = c; b1 = x;
-    case 3: r1 = 0; g1 = x; b1 = c;
-    case 4: r1 = x; g1 = 0; b1 = c;
-    default:r1 = c; g1 = 0; b1 = x;
-  }
-  return (
-    r: (r1 + m).clamp(0.0, 1.0),
-    g: (g1 + m).clamp(0.0, 1.0),
-    b: (b1 + m).clamp(0.0, 1.0),
-  );
-}
-
-/// Runs in a background isolate: model bytes are already loaded on main thread.
-/// Produces per-pixel RGBA overlay using proper HSL color transfer so hair
-/// texture (highlights, shadows, strand detail) is fully preserved.
-Future<_SegmentResult> _runHairSegmentIsolate(_SegmentRequest req) async {
-  try {
-    final bytes   = await File(req.imagePath).readAsBytes();
-    final decoded = img.decodeImage(bytes);
-    if (decoded == null) return const _SegmentResult(null, 0, 0);
-
-    // Work at 512×512 — good quality/speed balance on photos
-    const kSize = 512;
-    final resized = img.copyResize(decoded, width: kSize, height: kSize);
-
-    // Create interpreter from pre-loaded bytes (rootBundle unavailable in isolate)
-    final interpreter = Interpreter.fromBuffer(
-      req.modelBytes,
-      options: InterpreterOptions()..threads = 2,
-    );
-
-    final inputShape  = interpreter.getInputTensor(0).shape;
-    final outputShape = interpreter.getOutputTensor(0).shape;
-    final modelH = inputShape[1];
-    final modelW = inputShape[2];
-
-    final modelInput = img.copyResize(resized, width: modelW, height: modelH);
-
-    final inputData = Float32List(modelH * modelW * 3);
-    int idx = 0;
-    for (int y = 0; y < modelH; y++) {
-      for (int x = 0; x < modelW; x++) {
-        final p = modelInput.getPixel(x, y);
-        inputData[idx++] = p.r / 255.0;
-        inputData[idx++] = p.g / 255.0;
-        inputData[idx++] = p.b / 255.0;
-      }
-    }
-
-    final inputTensor  = inputData.reshape([1, modelH, modelW, 3]);
-    final numClasses   = outputShape.length >= 4 ? outputShape[3] : 1;
-    final outputData   = Float32List(modelH * modelW * numClasses);
-    final outputTensor = outputData.reshape([1, modelH, modelW, numClasses]);
-    interpreter.run(inputTensor, outputTensor);
-    interpreter.close();
-
-    final hairChannel = numClasses > 1 ? 1 : 0;
-
-    // Decompose target color → HSL
-    final tR = ((req.targetColorValue >> 16) & 0xFF) / 255.0;
-    final tG = ((req.targetColorValue >>  8) & 0xFF) / 255.0;
-    final tB = ( req.targetColorValue        & 0xFF) / 255.0;
-    final targetHSL = _rgbToHSL(tR, tG, tB);
-    final tH = targetHSL.h;
-    final tS = targetHSL.s;
-
-    final outPixels = Uint8List(kSize * kSize * 4);
-
-    for (int outY = 0; outY < kSize; outY++) {
-      for (int outX = 0; outX < kSize; outX++) {
-        final maskX   = (outX * modelW / kSize).toInt().clamp(0, modelW - 1);
-        final maskY   = (outY * modelH / kSize).toInt().clamp(0, modelH - 1);
-        final maskIdx = (maskY * modelW + maskX) * numClasses + hairChannel;
-
-        var conf = outputData[maskIdx].clamp(0.0, 1.0);
-
-        // Smoothstep with 0.25 cutoff
-        if (conf < 0.25) {
-          conf = 0.0;
-        } else {
-          final t = ((conf - 0.25) / 0.75).clamp(0.0, 1.0);
-          conf = t * t * (3.0 - 2.0 * t);
-        }
-
-        final alpha = (conf * req.intensity * 240).round().clamp(0, 230);
-        if (alpha == 0) continue;
-
-        // Sample source pixel from the full-resolution resized image
-        final srcPixel = resized.getPixel(outX, outY);
-        final srcR = srcPixel.r / 255.0;
-        final srcG = srcPixel.g / 255.0;
-        final srcB = srcPixel.b / 255.0;
-
-        // Proper HSL color replace: keep src luminance, apply target hue + saturation
-        final srcHSL  = _rgbToHSL(srcR, srcG, srcB);
-        final outRGB  = _hslToRGB(tH, tS, srcHSL.l);
-
-        // Pre-multiply for correct srcOver compositing
-        final aN   = alpha / 255.0;
-        final base = (outY * kSize + outX) * 4;
-        outPixels[base + 0] = (outRGB.r * aN * 255).round().clamp(0, 255);
-        outPixels[base + 1] = (outRGB.g * aN * 255).round().clamp(0, 255);
-        outPixels[base + 2] = (outRGB.b * aN * 255).round().clamp(0, 255);
-        outPixels[base + 3] = alpha;
-      }
-    }
-
-    return _SegmentResult(outPixels, kSize, kSize);
-  } catch (e) {
-    debugPrint('⚠️ Hair segmentation isolate error: $e');
-    return const _SegmentResult(null, 0, 0);
-  }
-}
-
-// ─── CustomPainter for photo hair colour overlay ──────────────────────────────
-class _HairColorPainter extends CustomPainter {
-  final ui.Image sourceImage;
-  final ui.Image? maskImage;
-
-  const _HairColorPainter({required this.sourceImage, this.maskImage});
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final srcRect  = Rect.fromLTWH(0, 0, sourceImage.width.toDouble(), sourceImage.height.toDouble());
-    final dstRect  = Rect.fromLTWH(0, 0, size.width, size.height);
-
-    // 1) Draw the original photo
-    canvas.drawImageRect(sourceImage, srcRect, dstRect, Paint());
-
-    // 2) Blend the mask using BlendMode.plus (src-over with pre-multiplied alpha
-    //    gives natural blending; the mask pixels ARE the HSL-blended hair color)
-    if (maskImage != null) {
-      final maskRect = Rect.fromLTWH(0, 0, maskImage!.width.toDouble(), maskImage!.height.toDouble());
-      canvas.drawImageRect(
-        maskImage!,
-        maskRect,
-        dstRect,
-        Paint()..blendMode = BlendMode.srcOver,
-      );
-    }
-  }
-
-  @override
-  bool shouldRepaint(_HairColorPainter old) =>
-      old.maskImage != maskImage || old.sourceImage != sourceImage;
-}
-
 // ═════════════════════════════════════════════════════════════════════════════
 class HairColorTryOnScreen extends StatefulWidget {
   final String? productName;
@@ -407,20 +195,11 @@ class HairColorTryOnScreen extends StatefulWidget {
 
 class _HairColorTryOnState extends State<HairColorTryOnScreen> {
   NativeLipRendererController? _nativeController;
-  bool _isLive = true;
-  File? _uploadedImage;
 
   late _HairCategory _selectedCategory;
   late _HairShade _selected;
 
   double _intensity = 0.4;
-  final _picker = ImagePicker();
-
-  // Uploaded photo segmentation state
-  ui.Image? _sourceUiImage;
-  ui.Image? _hairMaskUiImage;
-  bool _segmenting = false;
-  Uint8List? _segmenterModelBytes;
 
   @override
   void initState() {
@@ -443,98 +222,39 @@ class _HairColorTryOnState extends State<HairColorTryOnScreen> {
 
   @override
   void dispose() {
-    _sourceUiImage?.dispose();
-    _hairMaskUiImage?.dispose();
+    _nativeController?.dispose();
     super.dispose();
   }
 
   void _onViewCreated(NativeLipRendererController controller) {
     _nativeController = controller;
-    _nativeController?.start();
-    _updateHairEffect();
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      if (!mounted) return;
+      try {
+        await controller.setEffect(
+          shade: _selected.color,
+          intensity: _intensity,
+          category: 'cmd_haircolor',
+        );
+      } catch (e, st) {
+        debugPrint('Hair try-on: setEffect failed: $e\n$st');
+      }
+      if (!mounted) return;
+      try {
+        await controller.start();
+      } catch (e, st) {
+        debugPrint('Hair try-on: native camera start failed: $e\n$st');
+      }
+    });
   }
 
   void _updateHairEffect() {
-    if (_isLive && _nativeController != null) {
+    if (_nativeController != null) {
       _nativeController!.setEffect(
         shade: _selected.color,
         intensity: _intensity,
         category: 'cmd_haircolor',
       );
-    } else if (!_isLive && _uploadedImage != null) {
-      _runPhotoSegmentation();
-    }
-  }
-
-  Future<void> _uploadPhoto() async {
-    final f = await _picker.pickImage(source: ImageSource.gallery, imageQuality: 90);
-    if (f == null) return;
-    final file = File(f.path);
-    setState(() {
-      _uploadedImage = file;
-      _isLive = false;
-      _hairMaskUiImage = null;
-      _sourceUiImage = null;
-    });
-    await _loadSourceImage(file);
-    _runPhotoSegmentation();
-  }
-
-  Future<void> _loadSourceImage(File file) async {
-    final bytes = await file.readAsBytes();
-    final codec = await ui.instantiateImageCodec(bytes);
-    final frame = await codec.getNextFrame();
-    if (mounted) {
-      setState(() => _sourceUiImage = frame.image);
-    }
-  }
-
-  Future<void> _runPhotoSegmentation() async {
-    final file = _uploadedImage;
-    if (file == null || _segmenting) return;
-    setState(() => _segmenting = true);
-
-    try {
-      // Load model bytes on the main thread (rootBundle not available in isolates)
-      if (_segmenterModelBytes == null) {
-        try {
-          final byteData = await rootBundle.load('assets/models/hair_segmenter.tflite');
-          _segmenterModelBytes = byteData.buffer.asUint8List();
-        } catch (e) {
-          debugPrint('⚠️ hair_segmenter.tflite not found in assets: $e');
-        }
-      }
-
-      if (_segmenterModelBytes == null) {
-        // No segmenter model — skip
-        if (mounted) setState(() => _segmenting = false);
-        return;
-      }
-
-      final result = await compute(
-        _runHairSegmentIsolate,
-        _SegmentRequest(file.path, _segmenterModelBytes!, _selected.color.value, _intensity),
-      );
-
-      if (result.rgbaBytes != null && result.width > 0 && mounted) {
-        final codec = await ui.ImageDescriptor.raw(
-          await ui.ImmutableBuffer.fromUint8List(result.rgbaBytes!),
-          width: result.width,
-          height: result.height,
-          pixelFormat: ui.PixelFormat.rgba8888,
-        ).instantiateCodec();
-        final frame  = await codec.getNextFrame();
-        if (mounted) {
-          setState(() {
-            _hairMaskUiImage?.dispose();
-            _hairMaskUiImage = frame.image;
-          });
-        }
-      }
-    } catch (e) {
-      debugPrint('⚠️ Photo hair segmentation failed: $e');
-    } finally {
-      if (mounted) setState(() => _segmenting = false);
     }
   }
 
@@ -542,7 +262,10 @@ class _HairColorTryOnState extends State<HairColorTryOnScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: _bg,
-      body: Stack(children: [
+      body: Stack(
+        fit: StackFit.expand,
+        clipBehavior: Clip.hardEdge,
+        children: [
         Positioned.fill(child: _buildViewport()),
 
         SafeArea(child: Padding(
@@ -582,77 +305,44 @@ class _HairColorTryOnState extends State<HairColorTryOnScreen> {
           ]),
         ),
 
-        // Segmentation progress indicator (photo mode)
-        if (!_isLive && _segmenting)
-          Positioned(
-            top: 80, left: 0, right: 0,
-            child: Center(
-              child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                decoration: BoxDecoration(
-                  color: Colors.black54,
-                  borderRadius: BorderRadius.circular(20),
+        Positioned(
+          bottom: 0, left: 0, right: 0,
+          child: Align(
+            alignment: Alignment.bottomCenter,
+            child: ConstrainedBox(
+              constraints: BoxConstraints(
+                maxHeight: MediaQuery.sizeOf(context).height * 0.58,
+                maxWidth: MediaQuery.sizeOf(context).width,
+              ),
+              child: Material(
+                color: _bg,
+                elevation: 8,
+                shadowColor: Colors.black,
+                child: SingleChildScrollView(
+                  child: _buildBottomPanel(),
                 ),
-                child: const Row(mainAxisSize: MainAxisSize.min, children: [
-                  SizedBox(width: 16, height: 16,
-                    child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white)),
-                  SizedBox(width: 10),
-                  Text('Analysing hair…',
-                      style: TextStyle(color: Colors.white, fontSize: 12)),
-                ]),
               ),
             ),
           ),
-
-        Positioned(
-          bottom: 0, left: 0, right: 0,
-          child: _buildBottomPanel(),
         ),
       ]),
     );
   }
 
   Widget _buildViewport() {
-    if (!_isLive) {
-      final src = _sourceUiImage;
-      if (src == null && _uploadedImage != null) {
-        // Show raw image while ui.Image is loading
-        return Image.file(_uploadedImage!, fit: BoxFit.cover,
-            width: double.infinity, height: double.infinity);
-      }
-      if (src == null) return const SizedBox.shrink();
-
-      return CustomPaint(
-        painter: _HairColorPainter(
-          sourceImage: src,
-          maskImage: _hairMaskUiImage,
-        ),
-        size: Size.infinite,
-      );
-    }
-
     return NativeLipRendererView(onViewCreated: _onViewCreated);
   }
 
   Widget _buildBottomPanel() {
     return Container(
       decoration: BoxDecoration(
-        color: _bg.withOpacity(0.94),
+        color: _bg,
         borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
       ),
       child: SafeArea(
         top: false,
         child: Column(mainAxisSize: MainAxisSize.min, children: [
           const SizedBox(height: 12),
-          Row(mainAxisAlignment: MainAxisAlignment.center, children: [
-            _toggleChip('Live Camera', _isLive, () {
-              setState(() { _isLive = true; _uploadedImage = null; });
-              _updateHairEffect();
-            }),
-            const SizedBox(width: 12),
-            _toggleChip('Upload Photo', !_isLive, _uploadPhoto),
-          ]),
-          const SizedBox(height: 14),
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 20),
             child: Row(children: [
@@ -760,7 +450,7 @@ class _HairColorTryOnState extends State<HairColorTryOnScreen> {
                           color: isSelected ? Colors.white : Colors.white24,
                           width: isSelected ? 2.5 : 1),
                         boxShadow: isSelected
-                            ? [BoxShadow(color: shade.color.withOpacity(.4), blurRadius: 10)]
+                            ? [BoxShadow(color: shade.color.withValues(alpha: 0.4), blurRadius: 10)]
                             : null,
                       ),
                     ),
@@ -787,24 +477,6 @@ class _HairColorTryOnState extends State<HairColorTryOnScreen> {
         width: 40, height: 40,
         decoration: const BoxDecoration(color: Colors.black45, shape: BoxShape.circle),
         child: Icon(icon, color: Colors.white, size: 20),
-      ),
-    );
-  }
-
-  Widget _toggleChip(String label, bool active, VoidCallback onTap) {
-    return GestureDetector(
-      onTap: onTap,
-      child: AnimatedContainer(
-        duration: const Duration(milliseconds: 180),
-        padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 8),
-        decoration: BoxDecoration(
-          color: active ? _red : _surface,
-          borderRadius: BorderRadius.circular(20),
-          border: Border.all(color: active ? _red : Colors.white12),
-        ),
-        child: Text(label,
-            style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700,
-                color: active ? Colors.white : Colors.white54)),
       ),
     );
   }

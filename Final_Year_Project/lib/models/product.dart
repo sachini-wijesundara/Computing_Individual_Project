@@ -1,5 +1,7 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 
+import '../utils/price_format.dart';
+
 /// Shade selected when adding a product to the local [CartProvider] cart.
 class ProductShade {
   final String name;
@@ -99,5 +101,5 @@ class Product {
   }
 
   @override
-  String toString() => 'Product($id, $name, $category/$subCategory, Rs.$price)';
+  String toString() => 'Product($id, $name, $category/$subCategory, ${formatRs(price)})';
 }

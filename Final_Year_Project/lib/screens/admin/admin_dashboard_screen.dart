@@ -10,6 +10,7 @@ import 'admin_manage_reviews_screen.dart';
 import 'admin_manage_users_screen.dart';
 import 'admin_support_chats_screen.dart';
 import 'widgets/admin_side_panel.dart';
+import '../../utils/price_format.dart';
 
 class AdminDashboardScreen extends StatefulWidget {
   /// When true, sidebar is provided by [AdminShellScreen]; only main content is built.
@@ -393,7 +394,7 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
               const SizedBox(height: 10),
               Text(
                 'Your catalog is performing about $beat% ahead of the last snapshot. '
-                'Revenue from orders is at Rs ${orderRevenue.toStringAsFixed(0)} — manage your digital boutique with ease.',
+                'Revenue from orders is at ${formatRs(orderRevenue)} — manage your digital boutique with ease.',
                 style: TextStyle(
                   color: Colors.white.withValues(alpha: 0.88),
                   fontSize: 14,
@@ -432,7 +433,7 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
       ),
       _KpiTileData(
         'Catalog Value',
-        'Rs ${catalogValue.toStringAsFixed(0)}',
+        formatRs(catalogValue),
         Icons.payments_rounded,
         '+4%',
         true,
@@ -446,7 +447,7 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
       ),
       _KpiTileData(
         'Order Revenue',
-        'Rs ${orderRevenue.toStringAsFixed(0)}',
+        formatRs(orderRevenue),
         Icons.account_balance_wallet_rounded,
         orderRevenue < 10000 ? 'Goal: Rs 10k' : 'On track',
         orderRevenue >= 10000,
@@ -1091,7 +1092,7 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
                       crossAxisAlignment: CrossAxisAlignment.end,
                       children: [
                         Text(
-                          'Rs ${total.toStringAsFixed(0)}',
+                          formatRs(total),
                           style: const TextStyle(
                             fontWeight: FontWeight.w800,
                             fontSize: 12,

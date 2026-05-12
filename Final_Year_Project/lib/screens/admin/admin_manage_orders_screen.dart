@@ -6,6 +6,7 @@ import 'admin_manage_products_screen.dart';
 import 'admin_manage_reviews_screen.dart';
 import 'admin_manage_users_screen.dart';
 import 'widgets/admin_side_panel.dart';
+import '../../utils/price_format.dart';
 
 class AdminManageOrdersScreen extends StatefulWidget {
   final bool shellEmbedded;
@@ -223,7 +224,7 @@ class _AdminManageOrdersScreenState extends State<AdminManageOrdersScreen> {
                     ),
                     _statCard(
                       'Revenue',
-                      'Rs ${totalRevenue.toStringAsFixed(0)}',
+                      formatRs(totalRevenue),
                       Icons.payments_rounded,
                       const Color(0xFFEFF2FA),
                     ),
@@ -594,7 +595,7 @@ class _AdminManageOrdersScreenState extends State<AdminManageOrdersScreen> {
           Expanded(
             flex: 2,
             child: Text(
-              'Rs ${total.toStringAsFixed(0)}',
+              formatRs(total),
               style: const TextStyle(fontWeight: FontWeight.w700),
             ),
           ),

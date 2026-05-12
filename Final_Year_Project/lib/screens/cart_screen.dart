@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../providers/cart_provider.dart';
 import '../utils/cart_pricing.dart';
+import '../utils/price_format.dart';
 import '../widgets/firebase_image.dart';
 import 'checkout_screen.dart';
 
@@ -166,7 +167,7 @@ class CartScreen extends StatelessWidget {
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
                       Text(
-                        'LKR ${item.product.price.toStringAsFixed(0)}',
+                        formatRs(item.product.price),
                         style: const TextStyle(
                           fontSize: 34 / 2,
                           fontWeight: FontWeight.w800,
@@ -278,7 +279,7 @@ class CartScreen extends StatelessWidget {
                   crossAxisAlignment: CrossAxisAlignment.end,
                   children: [
                     Text(
-                      'LKR ${total.toStringAsFixed(2)}',
+                      formatRs(total, fractionDigits: 2),
                       style: const TextStyle(
                         fontSize: 24,
                         fontWeight: FontWeight.w800,
@@ -287,7 +288,7 @@ class CartScreen extends StatelessWidget {
                     ),
                     const SizedBox(height: 6),
                     Text(
-                      '-LKR ${discount.toStringAsFixed(2)}',
+                      formatRs(-discount, fractionDigits: 2),
                       style: const TextStyle(
                         fontSize: 34 / 2,
                         fontWeight: FontWeight.w600,

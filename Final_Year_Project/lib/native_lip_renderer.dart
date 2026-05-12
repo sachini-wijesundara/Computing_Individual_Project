@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:typed_data';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
@@ -80,38 +81,42 @@ class _NativeLipRendererViewState extends State<NativeLipRendererView> {
   Widget build(BuildContext context) {
     switch (defaultTargetPlatform) {
       case TargetPlatform.android:
-        return PlatformViewLink(
-          viewType: _viewType,
-          surfaceFactory: (context, controller) {
-            return AndroidViewSurface(
-              controller: controller as AndroidViewController,
-              gestureRecognizers: const <Factory<OneSequenceGestureRecognizer>>{},
-              hitTestBehavior: PlatformViewHitTestBehavior.opaque,
-            );
-          },
-          onCreatePlatformView: (params) {
-            final controller = PlatformViewsService.initSurfaceAndroidView(
-              id: params.id,
-              viewType: _viewType,
-              layoutDirection: TextDirection.ltr,
-              creationParams: const <String, dynamic>{},
-              creationParamsCodec: const StandardMessageCodec(),
-            );
-            controller.addOnPlatformViewCreatedListener((id) {
-              params.onPlatformViewCreated(id);
-              _handlePlatformViewCreated(id);
-            });
-            controller.create();
-            return controller;
-          },
+        return SizedBox.expand(
+          child: PlatformViewLink(
+            viewType: _viewType,
+            surfaceFactory: (context, controller) {
+              return AndroidViewSurface(
+                controller: controller as AndroidViewController,
+                gestureRecognizers: const <Factory<OneSequenceGestureRecognizer>>{},
+                hitTestBehavior: PlatformViewHitTestBehavior.opaque,
+              );
+            },
+            onCreatePlatformView: (params) {
+              final controller = PlatformViewsService.initSurfaceAndroidView(
+                id: params.id,
+                viewType: _viewType,
+                layoutDirection: TextDirection.ltr,
+                creationParams: const <String, dynamic>{},
+                creationParamsCodec: const StandardMessageCodec(),
+              );
+              controller.addOnPlatformViewCreatedListener((id) {
+                params.onPlatformViewCreated(id);
+                _handlePlatformViewCreated(id);
+              });
+              controller.create();
+              return controller;
+            },
+          ),
         );
       case TargetPlatform.iOS:
-        return UiKitView(
-          viewType: _viewType,
-          layoutDirection: TextDirection.ltr,
-          creationParams: const <String, dynamic>{},
-          creationParamsCodec: const StandardMessageCodec(),
-          onPlatformViewCreated: _handlePlatformViewCreated,
+        return SizedBox.expand(
+          child: UiKitView(
+            viewType: _viewType,
+            layoutDirection: TextDirection.ltr,
+            creationParams: const <String, dynamic>{},
+            creationParamsCodec: const StandardMessageCodec(),
+            onPlatformViewCreated: _handlePlatformViewCreated,
+          ),
         );
       default:
         return const SizedBox.shrink();
@@ -182,6 +187,25 @@ class NativeLipRendererController {
       'layers': layers,
       'isCompareMode': isCompareMode,
     });
+  }
+
+  /// Provide a photo for offline try-on (native photo mode).
+  Future<void> setPhoto({required String imageFilePath}) async {
+    await _methodChannel.invokeMethod<void>('setPhoto', {
+      'imageFilePath': imageFilePath,
+    });
+  }
+
+  /// Render the currently-set effect/look onto the provided photo.
+  /// Returns PNG bytes.
+  Future<Uint8List> renderPhoto() async {
+    final bytes = await _methodChannel.invokeMethod('renderPhoto');
+    if (bytes is Uint8List) return bytes;
+    if (bytes is ByteData) return bytes.buffer.asUint8List();
+    throw PlatformException(
+      code: 'renderPhoto',
+      message: 'Unexpected renderPhoto result type: ${bytes.runtimeType}',
+    );
   }
 
   Future<void> setDebug({required bool showLandmarks}) async {

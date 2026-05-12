@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart' show rootBundle;
+import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:provider/provider.dart';
 
 import 'screens/camera_screen.dart';
@@ -18,7 +20,6 @@ import 'providers/auth_provider.dart';
 import 'providers/cart_provider.dart';
 
 import 'firebase/firebase_config.dart';
-import 'services/firestore_service.dart'; // exposes seedAllProductsOnce()
 import 'utils/seed_products.dart';
 
 const bool _enableProductSeed = bool.fromEnvironment(
@@ -26,9 +27,40 @@ const bool _enableProductSeed = bool.fromEnvironment(
   defaultValue: false,
 );
 
+/// Bundled [`.env`] (pubspec) first, then [assets/env/local_keys.env]. Duplicate keys keep
+/// the value from `.env` (flutter_dotenv parses first occurrence).
+Future<void> _loadAppDotenv() async {
+  final merged = StringBuffer();
+  try {
+    merged.writeln(await rootBundle.loadString('.env'));
+  } catch (e) {
+    debugPrint(
+      'ℹ️ Bundled .env missing ($e). Run: cp .env.example .env  (next to pubspec.yaml), then flutter run again.',
+    );
+  }
+  try {
+    merged.writeln(await rootBundle.loadString('assets/env/local_keys.env'));
+  } catch (e) {
+    debugPrint('⚠️ assets/env/local_keys.env: $e');
+  }
+  final text = merged.toString().trim();
+  if (text.isEmpty) {
+    dotenv.testLoad(fileInput: 'GEMINI_API_KEY=\nOPENROUTER_API_KEY=\n');
+    return;
+  }
+  dotenv.testLoad(fileInput: text);
+}
+
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  
+
+  try {
+    await _loadAppDotenv();
+  } catch (e, stackTrace) {
+    debugPrint('⚠️ Dotenv load error: $e');
+    debugPrint('$stackTrace');
+  }
+
   try {
     await FirebaseConfig.initialize();
     debugPrint('✅ Firebase initialized successfully');

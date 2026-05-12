@@ -1,5 +1,13 @@
 {
   "projects": {
     "default": "finalyearproject-45e32"
+  },
+  "targets": {
+    "finalyearproject-45e32": {
+      "hosting": {
+        "admin": ["finalyearproject-45e32-admin"],
+        "delivery": ["finalyearproject-45e32-delivery"]
+      }
+    }
   }
 }

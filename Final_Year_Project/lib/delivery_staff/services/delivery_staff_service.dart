@@ -1,7 +1,7 @@
-import 'dart:io';
 import 'dart:async';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:cross_file/cross_file.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_storage/firebase_storage.dart';
 
@@ -255,7 +255,7 @@ class DeliveryStaffService {
 
   Future<void> attachDeliveryProof({
     required String orderId,
-    required String localFilePath,
+    required XFile image,
     String? note,
   }) async {
     final id = uid;
@@ -264,7 +264,11 @@ class DeliveryStaffService {
     }
     final ts = DateTime.now().millisecondsSinceEpoch;
     final storagePath = 'delivery_proofs/$id/$orderId/$ts.jpg';
-    await _storage.ref(storagePath).putFile(File(localFilePath));
+    final bytes = await image.readAsBytes();
+    await _storage.ref(storagePath).putData(
+          bytes,
+          SettableMetadata(contentType: 'image/jpeg'),
+        );
     final url = await _storage.ref(storagePath).getDownloadURL();
     await _db.collection('orders').doc(orderId).set({
       'proofImageUrl': url,

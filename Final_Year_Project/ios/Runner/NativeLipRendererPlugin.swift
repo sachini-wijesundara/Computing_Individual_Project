@@ -764,6 +764,8 @@ private class NativeLipRendererView: NSObject, FlutterPlatformView, FlutterStrea
   private var hairSegmenter: ImageSegmenter?
   private var isProcessingHair = false
   private let hairQueue = DispatchQueue(label: "hair_processing", qos: .userInteractive)
+  /// Serializes photo decode + face detect + PNG render so rapid `setLook` taps cannot overlap (jetsam).
+  private let photoRenderQueue = DispatchQueue(label: "com.lavoguevista.native_lip_renderer.photo_pipeline")
   private let nailSegQueue = DispatchQueue(label: "nail_seg_processing", qos: .userInitiated)
   private var isProcessingNailSeg = false
   private var skippedHairFrames = 0
@@ -792,7 +794,9 @@ private class NativeLipRendererView: NSObject, FlutterPlatformView, FlutterStrea
   private let nailHighlightLayer = CAShapeLayer() // Specular gloss near free edge
   private let nailDebugLayer     = CAShapeLayer() // Landmark dots + axes (debug)
   private let nailSegmentLayer   = CALayer()      // TFLite mask
-  private let nailRenderer    = NailPolishRenderer()
+  /// Loaded on first use only. Current nail modes use `forceSimpleNailMode` (landmarks only),
+  /// so this avoids allocating the ~224² nail TFLite interpreter for every platform view.
+  private lazy var nailRenderer = NailPolishRenderer()
   // Reliability-first mode for deadline: use stable landmark rendering each frame.
   // (Hybrid segmentation path can be re-enabled after submission tuning.)
   private let useNailSegmentationLive = false
@@ -812,6 +816,10 @@ private class NativeLipRendererView: NSObject, FlutterPlatformView, FlutterStrea
   private var currentHairStyleShape: String = "long"
   private var currentImageAsset: String? = nil
   private var showNailDebug: Bool = false
+
+  // ── Photo try-on (offline render) ─────────────────────────────────────────
+  private var photoUIImage: UIImage?
+  private var photoFaceLandmarker: FaceLandmarker?
 
   // ── Live nail stabilization ────────────────────────────────────────────────
   // Smooth the raw DIP and TIP landmark positions directly — this mirrors the
@@ -856,6 +864,7 @@ private class NativeLipRendererView: NSObject, FlutterPlatformView, FlutterStrea
   init(frame: CGRect, viewId: Int64, messenger: FlutterBinaryMessenger) {
     container = PreviewContainerView(frame: frame)
     container.backgroundColor = .black
+    container.isOpaque = true
     container.clipsToBounds = true
 
     methodChannel = FlutterMethodChannel(
@@ -889,12 +898,9 @@ private class NativeLipRendererView: NSObject, FlutterPlatformView, FlutterStrea
     setupLipLayer()
     methodChannel.setMethodCallHandler(handle)
     eventChannel.setStreamHandler(self)
-
-    DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-        self?.setupFaceLandmarker()
-        self?.setupHairSegmenter()
-        self?.setupHandLandmarker()
-    }
+    // Do not load Face / Hair / Hand models here — parallel init spikes memory (~3GB+ jetsam).
+    // Video FaceLandmarker: `startCamera()`. Hair segmenter: first hair frame. Hand: nail mode in `startCamera()`.
+    // Photo-only flows use `ensurePhotoFaceLandmarker()` and never allocate the video landmarker.
   }
 
   func view() -> UIView {
@@ -1003,6 +1009,27 @@ private class NativeLipRendererView: NSObject, FlutterPlatformView, FlutterStrea
         faceLandmarker = try FaceLandmarker(options: options)
     } catch {
         print("❌ iOS: Failed to initialize FaceLandmarker: \(error)")
+    }
+  }
+
+  private func ensurePhotoFaceLandmarker() -> FaceLandmarker? {
+    if let lm = photoFaceLandmarker { return lm }
+    guard let modelPath = Bundle.main.path(forResource: "face_landmarker", ofType: "task") else {
+      print("❌ iOS: face_landmarker.task not found in bundle (photo)")
+      return nil
+    }
+    let options = FaceLandmarkerOptions()
+    options.baseOptions.modelAssetPath = modelPath
+    options.runningMode = .image
+    options.numFaces = 1
+    options.minFaceDetectionConfidence = 0.3
+    do {
+      let lm = try FaceLandmarker(options: options)
+      photoFaceLandmarker = lm
+      return lm
+    } catch {
+      print("❌ iOS: Failed to initialize FaceLandmarker (photo): \(error)")
+      return nil
     }
   }
 
@@ -1129,6 +1156,21 @@ private class NativeLipRendererView: NSObject, FlutterPlatformView, FlutterStrea
                 self.nailSegmentLayer.opacity = 0
                 self.nailSegmentLayer.contents = nil
             }
+            // Hair / wig modes must not keep lip or stacked-makeup vectors (first frames used
+            // default "Lip Sticks" and could paint a full-screen path → black preview).
+            let cLow = self.currentCategory.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            if cLow == "cmd_haircolor" || cLow == "cmd_hairstyle" {
+                CATransaction.begin()
+                CATransaction.setDisableActions(true)
+                self.lipOverlayLayer.path = nil
+                self.lipOverlayLayer.opacity = 0
+                for sl in self.makeupSlotLayers {
+                    sl.path = nil
+                    sl.opacity = 0
+                }
+                self.makeupStackParent.mask = nil
+                CATransaction.commit()
+            }
         }
         result(nil)
     case "setLook":
@@ -1157,6 +1199,56 @@ private class NativeLipRendererView: NSObject, FlutterPlatformView, FlutterStrea
             }
         }
         result(nil)
+    case "setPhoto":
+        if let args = call.arguments as? [String: Any],
+           let filePath = args["imageFilePath"] as? String,
+           let img = UIImage(contentsOfFile: filePath) {
+            let norm = self.normalizedUIImage(img)
+            self.photoUIImage = self.downscaleForPhotoTryOn(norm)
+        } else {
+            self.photoUIImage = nil
+        }
+        result(nil)
+    case "renderPhoto":
+        photoRenderQueue.async { [weak self] in
+            autoreleasepool {
+                guard let self else {
+                    DispatchQueue.main.async {
+                        result(FlutterError(code: "photo", message: "renderer released", details: nil))
+                    }
+                    return
+                }
+                guard let base = self.photoUIImage else {
+                    DispatchQueue.main.async {
+                        result(FlutterError(code: "photo", message: "No photo set. Call setPhoto first.", details: nil))
+                    }
+                    return
+                }
+                guard let mp = try? MPImage(uiImage: base),
+                      let lm = self.ensurePhotoFaceLandmarker() else {
+                    DispatchQueue.main.async {
+                        result(FlutterError(code: "photo", message: "Failed to prepare photo landmarker.", details: nil))
+                    }
+                    return
+                }
+                do {
+                    let lmResult = try lm.detect(image: mp)
+                    guard let png = self.renderMakeupOnPhoto(baseImage: base, result: lmResult) else {
+                        DispatchQueue.main.async {
+                            result(FlutterError(code: "photo", message: "Render failed.", details: nil))
+                        }
+                        return
+                    }
+                    DispatchQueue.main.async {
+                        result(FlutterStandardTypedData(bytes: png))
+                    }
+                } catch {
+                    DispatchQueue.main.async {
+                        result(FlutterError(code: "photo", message: error.localizedDescription, details: nil))
+                    }
+                }
+            }
+        }
     case "setDebug":
         if let args = call.arguments as? [String: Any],
            let show = args["showLandmarks"] as? Bool {
@@ -1211,6 +1303,14 @@ private class NativeLipRendererView: NSObject, FlutterPlatformView, FlutterStrea
   private func startCamera() {
     if isNailCategory(), handLandmarker == nil {
       setupHandLandmarker()
+    }
+    // Hair colour uses ImageSegmenter only; loading FaceLandmarker here spikes memory and can
+    // contribute to jetsam + a stuck black preview layer on some devices.
+    let cat = currentCategory.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    if cat != "cmd_haircolor" {
+      if faceLandmarker == nil {
+        setupFaceLandmarker()
+      }
     }
 
     let session = AVCaptureSession()
@@ -1277,9 +1377,21 @@ private class NativeLipRendererView: NSObject, FlutterPlatformView, FlutterStrea
     self.captureSession = session
     self.previewLayer = preview
 
-    DispatchQueue.global(qos: .userInitiated).async {
-        session.startRunning()
-        self.sendEvent(["type": "ready"])
+    // startRunning must run on the main thread; starting from a background QoS queue
+    // commonly yields a black preview layer (especially after memory pressure / hair ML init).
+    DispatchQueue.main.async { [weak self] in
+      guard let self else { return }
+      session.startRunning()
+      self.container.setNeedsLayout()
+      self.container.layoutIfNeeded()
+      self.previewLayer?.frame = self.container.bounds
+      self.sendEvent(["type": "ready"])
+      // Flutter PlatformView often lays out after the first frame; a second main-queue pass
+      // fixes a persistent black preview when bounds were still .zero during startRunning().
+      DispatchQueue.main.async { [weak self] in
+        guard let self else { return }
+        self.previewLayer?.frame = self.container.bounds
+      }
     }
   }
 
@@ -1302,7 +1414,9 @@ private class NativeLipRendererView: NSObject, FlutterPlatformView, FlutterStrea
         let timestampMs = Int(Date().timeIntervalSince1970 * 1000)
 
         // ── HAIR COLOR MODE ──────────────────────────────────────────────────
-        if isHairColorMode, let segmenter = hairSegmenter {
+        if isHairColorMode {
+          if hairSegmenter == nil { setupHairSegmenter() }
+          guard let segmenter = hairSegmenter else { return }
           if isProcessingHair {
             skippedHairFrames += 1
             if skippedHairFrames >= kMaxSkip {
@@ -1338,6 +1452,8 @@ private class NativeLipRendererView: NSObject, FlutterPlatformView, FlutterStrea
 
         // ── HAIR STYLE (WIG) MODE ────────────────────────────────────────────
         } else if isHairStyleMode {
+          if faceLandmarker == nil { setupFaceLandmarker() }
+          if hairSegmenter == nil { setupHairSegmenter() }
           // A) FaceLandmarker EVERY frame → smooth wig tracking
           if let landmarker = faceLandmarker {
             let lmResult = try landmarker.detect(videoFrame: image, timestampInMilliseconds: timestampMs)
@@ -2175,13 +2291,55 @@ private class NativeLipRendererView: NSObject, FlutterPlatformView, FlutterStrea
     return t * t * (3 - 2 * t)
   }
 
+  /// Pick the confidence map that behaves like "hair" (localized) vs "background" (often high almost everywhere).
+  private func selectHairConfidenceMask(from masks: [Mask]) -> Mask {
+    guard masks.count > 1 else { return masks[0] }
+    func globalHighFraction(_ m: Mask) -> Float {
+      let w = m.width, h = m.height
+      let fp = m.float32Data
+      guard w > 0, h > 0 else { return 1 }
+      var hi = 0, tot = 0
+      let step = max(1, min(w, h) / 80)
+      for y in Swift.stride(from: 0, to: h, by: step) {
+        for x in Swift.stride(from: 0, to: w, by: step) {
+          tot += 1
+          if fp[y * w + x] > 0.4 { hi += 1 }
+        }
+      }
+      return Float(hi) / Float(max(1, tot))
+    }
+    func meanTopBand(_ m: Mask) -> Float {
+      let w = m.width, h = m.height
+      let fp = m.float32Data
+      guard w > 0, h > 0 else { return 0 }
+      let yMax = max(1, h / 8)
+      var sum: Float = 0
+      var n = 0
+      let step = max(1, min(w, h) / 96)
+      for y in Swift.stride(from: 0, to: yMax, by: step) {
+        for x in Swift.stride(from: 0, to: w, by: step) {
+          sum += fp[y * w + x]
+          n += 1
+        }
+      }
+      return n > 0 ? sum / Float(n) : 0
+    }
+    let m0 = masks[0], m1 = masks[1]
+    let g0 = globalHighFraction(m0), g1 = globalHighFraction(m1)
+    if abs(g0 - g1) > 0.08 {
+      return g0 <= g1 ? m0 : m1
+    }
+    let t0 = meanTopBand(m0), t1 = meanTopBand(m1)
+    return t0 >= t1 ? m0 : m1
+  }
+
   private func processHairMask(_ result: ImageSegmenterResult,
                                 pixelBuffer: CVPixelBuffer,
                                 shade: UIColor,
                                 styleShape: String? = nil) -> CGImage? {
     guard let maskList = result.confidenceMasks, !maskList.isEmpty else { return nil }
 
-    let hairMask = maskList.count > 1 ? maskList[1] : maskList[0]
+    let hairMask = selectHairConfidenceMask(from: maskList)
     let maskW = hairMask.width
     let maskH = hairMask.height
     guard maskW > 0 && maskH > 0 else { return nil }
@@ -2973,6 +3131,316 @@ private class NativeLipRendererView: NSObject, FlutterPlatformView, FlutterStrea
     dst.shadowOpacity = src.shadowOpacity
     dst.shadowRadius = src.shadowRadius
     dst.shadowOffset = src.shadowOffset
+  }
+
+  /// Normalize EXIF orientation so selfie landmarks/rendering align to actual pixels.
+  private func normalizedUIImage(_ image: UIImage) -> UIImage {
+    if image.imageOrientation == .up { return image }
+    let format = UIGraphicsImageRendererFormat.default()
+    format.scale = image.scale
+    let renderer = UIGraphicsImageRenderer(size: image.size, format: format)
+    return renderer.image { _ in
+      image.draw(in: CGRect(origin: .zero, size: image.size))
+    }
+  }
+
+  /// Try-on does not need full camera resolution; large bitmaps + many layers → EXC_RESOURCE.
+  private func downscaleForPhotoTryOn(_ image: UIImage, maxEdge: CGFloat = 1280) -> UIImage {
+    let w = image.size.width
+    let h = image.size.height
+    let m = max(w, h)
+    guard m > maxEdge else { return image }
+    let s = maxEdge / m
+    let nw = max(1, floor(w * s))
+    let nh = max(1, floor(h * s))
+    let format = UIGraphicsImageRendererFormat.default()
+    format.scale = 1
+    let renderer = UIGraphicsImageRenderer(size: CGSize(width: nw, height: nh), format: format)
+    return renderer.image { _ in
+      image.draw(in: CGRect(origin: .zero, size: CGSize(width: nw, height: nh)))
+    }
+  }
+
+  private func renderMakeupOnPhoto(baseImage: UIImage, result: FaceLandmarkerResult) -> Data? {
+    guard let landmarks = result.faceLandmarks.first else { return nil }
+    let size = baseImage.size
+    let w = size.width
+    let h = size.height
+    if w < 2 || h < 2 { return nil }
+
+    struct Paint {
+      var fill: UIColor = .clear
+      var stroke: UIColor = .clear
+      var lineWidth: CGFloat = 0
+      var fillRule: CGPathFillRule = .evenOdd
+      var blend: CGBlendMode = .normal
+      var shadowColor: UIColor? = nil
+      var shadowOpacity: CGFloat = 0
+      var shadowRadius: CGFloat = 0
+      var shadowOffset: CGSize = .zero
+    }
+
+    func point(_ idx: Int) -> CGPoint {
+      let lm = landmarks[idx]
+      return CGPoint(x: CGFloat(lm.x) * w, y: CGFloat(lm.y) * h)
+    }
+
+    func addPolygon(_ indices: [Int], to p: UIBezierPath, close: Bool = true) {
+      guard let first = indices.first else { return }
+      p.move(to: point(first))
+      for i in indices.dropFirst() { p.addLine(to: point(i)) }
+      if close { p.close() }
+    }
+
+    func addSmoothedCheekPolygon(_ indices: [Int], to p: UIBezierPath) {
+      guard indices.count >= 4 else { addPolygon(indices, to: p, close: true); return }
+      var pts = indices.map { point($0) }
+      let n = pts.count
+      let dupClose = indices.first == indices.last
+      for _ in 0..<7 {
+        if dupClose { pts[n - 1] = pts[0] }
+        let snap = pts
+        for i in 1...(n - 2) {
+          pts[i] = CGPoint(
+            x: snap[i].x * 0.42 + (snap[i - 1].x + snap[i + 1].x) * 0.29,
+            y: snap[i].y * 0.42 + (snap[i - 1].y + snap[i + 1].y) * 0.29
+          )
+        }
+        if dupClose { pts[n - 1] = pts[0] }
+      }
+      p.move(to: pts[0])
+      for i in 1..<n { p.addLine(to: pts[i]) }
+      p.close()
+    }
+
+    func addRibbonAlongPolyline(_ indices: [Int], halfWidth: CGFloat, to p: UIBezierPath) {
+      guard indices.count >= 2, halfWidth > 0.5 else { return }
+      let pts = indices.map { point($0) }
+      let n = pts.count
+      var left = [CGPoint](repeating: .zero, count: n)
+      var right = [CGPoint](repeating: .zero, count: n)
+      for i in 0..<n {
+        let prev = pts[max(0, i - 1)]
+        let next = pts[min(n - 1, i + 1)]
+        var dx = next.x - prev.x
+        var dy = next.y - prev.y
+        let len = max(0.001, hypot(dx, dy))
+        dx /= len; dy /= len
+        let ox = -dy * halfWidth
+        let oy = dx * halfWidth
+        left[i] = CGPoint(x: pts[i].x + ox, y: pts[i].y + oy)
+        right[i] = CGPoint(x: pts[i].x - ox, y: pts[i].y - oy)
+      }
+      p.move(to: left[0])
+      for i in 1..<n { p.addLine(to: left[i]) }
+      for i in (0..<n).reversed() { p.addLine(to: right[i]) }
+      p.close()
+    }
+
+    func blendMode(for filter: String?) -> CGBlendMode {
+      switch filter {
+      case "softLightBlendMode": return .softLight
+      case "screenBlendMode": return .screen
+      case "colorBlendMode": return .color
+      default: return .normal
+      }
+    }
+
+    func buildLayer(category rawCat: String, shade: UIColor, intensity: CGFloat) -> (UIBezierPath, Paint)? {
+      let cat = rawCat.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+      if cat == "cmd_none" { return nil }
+
+      let path = UIBezierPath()
+      var paint = Paint()
+      paint.fill = shade.withAlphaComponent(max(0.0, min(1.0, intensity)))
+      paint.fillRule = .evenOdd
+      paint.blend = .normal
+
+      let isBlush = cat == "cmd_blush"
+      let isFace = cat == "cmd_face" || cat == "cmd_foundation" || cat.contains("foundation")
+      let isHighlight = cat == "cmd_highlight"
+      let isShadow = cat == "cmd_eyeshadow"
+      let isMascara = cat == "cmd_mascara"
+      let isEyeliner = cat == "cmd_eyeliner" || cat == "cmd_eye"
+      let isEyebrow = cat == "cmd_eyebrow"
+      let isLipLiner = cat == "cmd_lipliner"
+      let isLipstick = (!isBlush && !isFace && !isHighlight && !isShadow && !isMascara && !isEyeliner && !isEyebrow && !isLipLiner)
+
+      if isBlush {
+        let leftCheek = [116, 117, 118, 100, 101, 119, 120, 121, 147, 213, 192, 214, 207, 205, 116]
+        let rightCheek = [345, 346, 347, 329, 330, 348, 349, 350, 376, 433, 416, 434, 427, 425, 345]
+        paint.fillRule = .winding
+        paint.blend = blendMode(for: "colorBlendMode")
+        addSmoothedCheekPolygon(leftCheek, to: path)
+        addSmoothedCheekPolygon(rightCheek, to: path)
+        let t = pow(max(0.0, min(1.0, intensity)), 0.52)
+        paint.fill = shade.withAlphaComponent(max(0.08, 0.30 * t))
+        paint.shadowColor = UIColor.black
+        paint.shadowOpacity = 0.14 + 0.18 * t
+        paint.shadowRadius = 44
+      } else if isHighlight {
+        let leftHighlight = [116, 117, 118, 100, 101, 119, 120, 121, 147, 116]
+        let rightHighlight = [345, 346, 347, 329, 330, 348, 349, 350, 376, 345]
+        let noseBridge = [168, 6, 197, 195, 5, 4, 1]
+        let cupid = [0, 267, 269, 270, 409, 291, 0]
+        paint.fillRule = .winding
+        paint.blend = blendMode(for: "softLightBlendMode")
+        addSmoothedCheekPolygon(leftHighlight, to: path)
+        addSmoothedCheekPolygon(rightHighlight, to: path)
+        let eyeMidY = (point(33).y + point(263).y) * 0.5
+        let chinY = point(152).y
+        let faceLen = max(abs(chinY - eyeMidY), 40)
+        let noseHalfW = max(3.2, min(8.5, faceLen * 0.052))
+        addRibbonAlongPolyline(noseBridge, halfWidth: noseHalfW, to: path)
+        addSmoothedCheekPolygon(cupid, to: path)
+        let t = pow(max(0.0, min(1.0, intensity)), 0.48)
+        paint.fill = shade.withAlphaComponent(max(0.05, 0.13 * t))
+        paint.shadowColor = shade
+        paint.shadowOpacity = min(0.45, 0.22 + t * 0.28)
+        paint.shadowRadius = 38
+      } else if isFace {
+        let faceOval = [338, 297, 332, 284, 251, 389, 356, 454, 323, 361, 288, 397, 365, 379, 378, 400, 377, 152, 148, 176, 149, 150, 136, 172, 58, 132, 93, 234, 127, 162, 21, 54, 103, 67, 109, 151, 10]
+        let outerLips = [61, 185, 40, 39, 37, 0, 267, 269, 270, 409, 291, 375, 321, 405, 314, 17, 84, 181, 91, 146]
+        let leftEye = [33, 7, 163, 144, 145, 153, 154, 155, 133, 173, 157, 158, 159, 160, 161, 246]
+        let rightEye = [362, 382, 381, 380, 374, 373, 390, 249, 263, 466, 388, 387, 386, 385, 384, 398]
+
+        addPolygon(faceOval, to: path, close: true)
+        addPolygon(outerLips, to: path, close: true)
+        addPolygon(leftEye, to: path, close: true)
+        addPolygon(rightEye, to: path, close: true)
+        let a = max(0.20, min(0.65, intensity * 0.7))
+        paint.fill = shade.withAlphaComponent(a)
+        paint.shadowColor = shade
+        paint.shadowOpacity = a * 0.52
+        paint.shadowRadius = 24
+      } else if isShadow {
+        func addShadowBand(_ lidIndices: [Int], verticalBias: CGFloat) {
+          guard lidIndices.count >= 3 else { return }
+          let lid = lidIndices.map { point($0) }
+          let minX = lid.map(\.x).min() ?? 0
+          let maxX = lid.map(\.x).max() ?? 0
+          let eyeWidth = max(1.0, maxX - minX)
+          let bandHeight = max(12.0, min(26.0, eyeWidth * 0.25))
+          var upper: [CGPoint] = []
+          upper.reserveCapacity(lid.count)
+          for i in 0..<lid.count {
+            let p0 = lid[i]
+            let prev = lid[max(0, i - 1)]
+            let next = lid[min(lid.count - 1, i + 1)]
+            let dx = next.x - prev.x
+            let dy = next.y - prev.y
+            let len = max(0.001, sqrt(dx * dx + dy * dy))
+            var nx = -dy / len
+            var ny = dx / len
+            if ny > 0 { nx = -nx; ny = -ny }
+            let t = CGFloat(i) / CGFloat(max(1, lid.count - 1))
+            let centerBoost = 0.70 + (0.35 * (1.0 - abs((t * 2.0) - 1.0)))
+            let off = bandHeight * centerBoost
+            upper.append(CGPoint(x: p0.x + (nx * off), y: p0.y + (ny * off) + verticalBias))
+          }
+          path.move(to: upper[0])
+          for p1 in upper.dropFirst() { path.addLine(to: p1) }
+          for p1 in lid.reversed() { path.addLine(to: p1) }
+          path.close()
+        }
+        let leftUpperLid = [33, 246, 161, 160, 159, 158, 157, 173, 133]
+        let rightUpperLid = [263, 466, 388, 387, 386, 385, 384, 398, 362]
+        addShadowBand(leftUpperLid, verticalBias: -2.0)
+        addShadowBand(rightUpperLid, verticalBias: -2.0)
+        let a = max(0.14, min(0.34, intensity * 0.24))
+        paint.fill = shade.withAlphaComponent(a)
+        paint.shadowColor = shade
+        paint.shadowOpacity = min(0.28, intensity * 0.42)
+        paint.shadowRadius = 8
+      } else if isMascara {
+        let leftUpperLash = [33, 246, 161, 160, 159, 158, 157, 173, 133]
+        let rightUpperLash = [362, 398, 384, 385, 386, 387, 388, 466, 263]
+        paint.fill = .clear
+        paint.stroke = shade.withAlphaComponent(max(0.45, intensity * 0.92))
+        paint.lineWidth = max(0.70, min(1.10, 0.80 + (intensity * 0.20)))
+        addPolygon(leftUpperLash, to: path, close: false)
+        addPolygon(rightUpperLash, to: path, close: false)
+        paint.shadowColor = UIColor.black
+        paint.shadowOpacity = min(0.16, intensity * 0.16)
+        paint.shadowRadius = 0.8
+      } else if isEyebrow {
+        let leftBrowUpper = [70, 63, 105, 66, 107, 55]
+        let leftBrowLower = [46, 53, 52, 65, 55]
+        let rightBrowUpper = [300, 293, 334, 296, 336, 285]
+        let rightBrowLower = [276, 283, 282, 295, 285]
+        addPolygon(leftBrowUpper + Array(leftBrowLower.reversed()), to: path, close: true)
+        addPolygon(rightBrowUpper + Array(rightBrowLower.reversed()), to: path, close: true)
+        paint.fill = shade.withAlphaComponent(max(0.16, min(0.38, intensity * 0.30)))
+        paint.shadowColor = UIColor.black
+        paint.shadowOpacity = min(0.12, intensity * 0.14)
+        paint.shadowRadius = 1.0
+      } else if isEyeliner {
+        let leftEyeTop = [33, 246, 161, 160, 159, 158, 157, 173, 133]
+        let leftEyeBottom = [33, 7, 163, 144, 145, 153, 154, 155, 133]
+        let rightEyeTop = [362, 398, 384, 385, 386, 387, 388, 466, 263]
+        let rightEyeBottom = [362, 382, 381, 380, 374, 373, 390, 249, 263]
+        paint.fill = .clear
+        paint.stroke = shade.withAlphaComponent(intensity)
+        paint.lineWidth = 2.5
+        addPolygon(leftEyeTop, to: path, close: false)
+        addPolygon(leftEyeBottom, to: path, close: false)
+        addPolygon(rightEyeTop, to: path, close: false)
+        addPolygon(rightEyeBottom, to: path, close: false)
+      } else if isLipLiner {
+        let outer = [61, 185, 40, 39, 37, 0, 267, 269, 270, 409, 291, 375, 321, 405, 314, 17, 84, 181, 91, 146]
+        paint.fill = .clear
+        paint.stroke = shade.withAlphaComponent(intensity)
+        paint.lineWidth = 3.5
+        addPolygon(outer, to: path, close: true)
+      } else if isLipstick {
+        let outer = [61, 185, 40, 39, 37, 0, 267, 269, 270, 409, 291, 375, 321, 405, 314, 17, 84, 181, 91, 146]
+        let inner = [78, 191, 80, 81, 82, 13, 312, 311, 310, 415, 308, 324, 318, 402, 317, 14, 87, 178, 88, 95]
+        addPolygon(outer, to: path, close: true)
+        addPolygon(inner, to: path, close: true)
+        paint.fillRule = .evenOdd
+        paint.fill = shade.withAlphaComponent(intensity)
+      }
+
+      return (path, paint)
+    }
+
+    let renderer = UIGraphicsImageRenderer(size: size)
+    let out = renderer.image { ctx in
+      baseImage.draw(in: CGRect(origin: .zero, size: size))
+      let context = ctx.cgContext
+      let layers: [MakeupLookEntry]
+      if usesMakeupLookStack {
+        layers = makeupLookStack
+      } else {
+        layers = [MakeupLookEntry(category: currentCategory, shade: currentShade, intensity: currentIntensity)]
+      }
+      for entry in layers {
+        guard let (p, paint) = buildLayer(category: entry.category, shade: entry.shade, intensity: entry.intensity) else { continue }
+        context.saveGState()
+        context.setBlendMode(paint.blend)
+        if let sc = paint.shadowColor, paint.shadowOpacity > 0, paint.shadowRadius > 0 {
+          context.setShadow(offset: paint.shadowOffset, blur: paint.shadowRadius, color: sc.withAlphaComponent(paint.shadowOpacity).cgColor)
+        }
+        p.usesEvenOddFillRule = (paint.fillRule == .evenOdd)
+        context.addPath(p.cgPath)
+        context.setFillColor(paint.fill.cgColor)
+        context.drawPath(using: .fill)
+        context.restoreGState()
+
+        if paint.lineWidth > 0, paint.stroke != .clear {
+          context.saveGState()
+          context.setBlendMode(paint.blend)
+          context.addPath(p.cgPath)
+          context.setStrokeColor(paint.stroke.cgColor)
+          context.setLineWidth(paint.lineWidth)
+          context.setLineJoin(.round)
+          context.setLineCap(.round)
+          context.strokePath()
+          context.restoreGState()
+        }
+      }
+    }
+    return out.pngData()
   }
 
   func onListen(withArguments arguments: Any?, eventSink events: @escaping FlutterEventSink) -> FlutterError? {

@@ -9,6 +9,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import '../models/product.dart';
+import '../utils/price_format.dart';
 import '../services/firebase_auth_service.dart';
 import '../services/firestore_service.dart';
 import 'ai_beauty_assistant_screen.dart';
@@ -33,10 +34,7 @@ const _muted   = Color(0xFF8A8A8A);
 const _gold    = Color(0xFFDCB568);
 const _navBg   = Color(0xFFEDE5E5);
 
-String rs(num n) =>
-    'Rs. ${n.toStringAsFixed(0).replaceAll(RegExp(r'(\\d)(?=(\\d{3})+(?!\\d))'), r'$1,')}'
-        .replaceAll('\\', '');
-
+String rs(num n) => formatRs(n);
 Icon _star(double r, int i) {
   final p = i + 1;
   if (r >= p) return const Icon(Icons.star, size: 16, color: Colors.red);
@@ -94,7 +92,19 @@ class DashboardPage extends StatefulWidget {
 
 class _DashboardPageState extends State<DashboardPage> {
   int _tab = 0;
+  final ScrollController _homeScroll = ScrollController();
   bool get _hideAiFabOnCurrentTab => _tab == 2 || _tab == 3 || _tab == 4;
+
+  void _scrollHomeToTop() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!_homeScroll.hasClients) return;
+      _homeScroll.animateTo(
+        0,
+        duration: const Duration(milliseconds: 360),
+        curve: Curves.easeOutCubic,
+      );
+    });
+  }
 
   void _onNavTap(int i) {
     if (i == 1) {
@@ -107,13 +117,24 @@ class _DashboardPageState extends State<DashboardPage> {
       );
       return;
     }
+    if (i == 0) {
+      if (_tab != 0) setState(() => _tab = 0);
+      _scrollHomeToTop();
+      return;
+    }
     setState(() => _tab = i);
+  }
+
+  @override
+  void dispose() {
+    _homeScroll.dispose();
+    super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
     final pages = <Widget>[
-      const _HomeFeed(),
+      _HomeFeed(scrollController: _homeScroll),
       const _SimplePage(title: 'Home'), // index 1 is never shown (Try Live = push nav)
       const CartScreen(showBackButton: false),
       SettingsScreen(
@@ -130,7 +151,8 @@ class _DashboardPageState extends State<DashboardPage> {
       drawer: _DashboardSideDrawer(
         onHome: () {
           Navigator.pop(context);
-          setState(() => _tab = 0);
+          if (_tab != 0) setState(() => _tab = 0);
+          _scrollHomeToTop();
         },
         onLiveTryon: () {
           Navigator.pop(context);
@@ -145,7 +167,7 @@ class _DashboardPageState extends State<DashboardPage> {
           Navigator.pop(context);
           Navigator.of(context).push(
             MaterialPageRoute(
-              builder: (_) => EnhancedAIAssistantScreen(),
+              builder: (_) => const EnhancedAIAssistantScreen(),
             ),
           );
         },
@@ -324,7 +346,8 @@ class _DashboardSideDrawer extends StatelessWidget {
 
 /// Home feed (Firestore + filter)
 class _HomeFeed extends StatefulWidget {
-  const _HomeFeed();
+  final ScrollController scrollController;
+  const _HomeFeed({required this.scrollController});
   @override
   State<_HomeFeed> createState() => _HomeFeedState();
 }
@@ -529,7 +552,7 @@ class _HomeFeedState extends State<_HomeFeed> {
       if (!mounted) return;
       final selected = await showSearch<Product?>(
         context: context,
-        delegate: _ProductSearchDelegate(products),
+        delegate: _ProductSearchDelegate(_dedupeSearchCatalog(products)),
       );
       if (!mounted) return;
       if (selected != null) {
@@ -596,16 +619,13 @@ class _HomeFeedState extends State<_HomeFeed> {
           final rawItems = snap.data!;
           final items = _applySubFilter(rawItems);
           return CustomScrollView(
+            controller: widget.scrollController,
             slivers: [
               SliverToBoxAdapter(
                 child: _HeaderBar(onSearchTap: _openProductSearch),
               ),
               const SliverToBoxAdapter(child: SizedBox(height: 8)),
-              if (_category == 'All' && items.isNotEmpty)
-                SliverToBoxAdapter(
-                    child: _HeroCarousel(items: items.take(4).toList())),
-              const SliverToBoxAdapter(child: SizedBox(height: 16)),
-              // ── Top-level category chips ──────────────────────────────────
+              // ── Category chips at top (All, Lip Sticks, Makeup, Hair) ───────
               SliverToBoxAdapter(
                 child: _CenteredChips(
                   categories: _categories,
@@ -621,6 +641,25 @@ class _HomeFeedState extends State<_HomeFeed> {
                 ),
               ),
               const SliverToBoxAdapter(child: SizedBox(height: 12)),
+              if (FirebaseAuth.instance.currentUser != null) ...[
+                const SliverToBoxAdapter(child: _DiscoverImagePager()),
+                if (items.isNotEmpty)
+                  SliverToBoxAdapter(
+                    child: _FeaturedProductsSwipe(
+                      products: items.take(16).toList(),
+                    ),
+                  ),
+                const SliverToBoxAdapter(child: SizedBox(height: 10)),
+              ],
+              if (_category == 'All' &&
+                  items.isNotEmpty &&
+                  FirebaseAuth.instance.currentUser == null)
+                SliverToBoxAdapter(
+                    child: _HeroCarousel(items: items.take(4).toList())),
+              if (FirebaseAuth.instance.currentUser == null &&
+                  _category == 'All' &&
+                  items.isNotEmpty)
+                const SliverToBoxAdapter(child: SizedBox(height: 12)),
               // ── Hair subcategory feature tiles ──────────────────────────────
               if (_category == 'Hair')
                 SliverToBoxAdapter(
@@ -764,6 +803,28 @@ class _MakeupDropdownFilters extends StatelessWidget {
   }
 }
 
+/// Removes duplicate document ids, then rows that share the same display
+/// name and brand (e.g. legacy double-seeded SKUs) so search stays one row per product.
+List<Product> _dedupeSearchCatalog(List<Product> raw) {
+  String norm(String s) =>
+      s.toLowerCase().trim().replaceAll(RegExp(r'\s+'), ' ');
+  final byId = <String, Product>{};
+  for (final p in raw) {
+    byId.putIfAbsent(p.id, () => p);
+  }
+  final byNameBrand = <String, Product>{};
+  for (final p in byId.values) {
+    final key = '${norm(p.name)}|${norm(p.brand)}';
+    final existing = byNameBrand[key];
+    if (existing == null) {
+      byNameBrand[key] = p;
+    } else if (p.id.compareTo(existing.id) < 0) {
+      byNameBrand[key] = p;
+    }
+  }
+  return byNameBrand.values.toList();
+}
+
 class _ProductSearchDelegate extends SearchDelegate<Product?> {
   _ProductSearchDelegate(this._all);
   final List<Product> _all;
@@ -888,6 +949,504 @@ class _ProductSearchDelegate extends SearchDelegate<Product?> {
   }
 }
 
+/// Full-width image stories: live try-on, AI, hair — with asset art + auto swipe.
+class _DiscoverImagePager extends StatefulWidget {
+  const _DiscoverImagePager();
+
+  @override
+  State<_DiscoverImagePager> createState() => _DiscoverImagePagerState();
+}
+
+class _DiscoverImagePagerState extends State<_DiscoverImagePager> {
+  late final PageController _pageController =
+      PageController(viewportFraction: 0.92);
+  int _page = 0;
+  Timer? _timer;
+
+  static const _slides = <_DiscoverSlide>[
+    _DiscoverSlide(
+      bannerAsset: 'assets/discover/discover_live_makeup_hair.png',
+      title: 'Live makeup & hair',
+      subtitle: 'Try lipstick, looks, and hair colour on camera',
+      accent: Color(0xFF7C150D),
+      shadowColor: Color(0xFF4A0D09),
+    ),
+    _DiscoverSlide(
+      bannerAsset: 'assets/discover/discover_ai_beauty.png',
+      title: 'AI skin & hair lab',
+      subtitle: 'Smart analysis and tips tailored to you',
+      accent: Color(0xFFD4A843),
+      shadowColor: Color(0xFF311B92),
+    ),
+    _DiscoverSlide(
+      bannerAsset: 'assets/discover/discover_hair_style.png',
+      title: 'Hair style match',
+      subtitle: 'Find catalogue cuts that suit your face',
+      accent: Color(0xFF90CAF9),
+      shadowColor: Color(0xFF0D2847),
+    ),
+  ];
+
+  @override
+  void initState() {
+    super.initState();
+    _timer = Timer.periodic(const Duration(seconds: 5), (_) {
+      if (!mounted || _slides.isEmpty) return;
+      final next = (_page + 1) % _slides.length;
+      _pageController.animateToPage(
+        next,
+        duration: const Duration(milliseconds: 520),
+        curve: Curves.easeOutCubic,
+      );
+    });
+  }
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    _pageController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+          child: Row(
+            children: [
+              Icon(Icons.auto_awesome_mosaic_rounded,
+                  size: 20, color: _maroon.withValues(alpha: 0.95)),
+              const SizedBox(width: 8),
+              const Text(
+                'Discover',
+                style: TextStyle(
+                  fontSize: 17,
+                  fontWeight: FontWeight.w800,
+                  color: _ink,
+                  letterSpacing: 0.3,
+                ),
+              ),
+            ],
+          ),
+        ),
+        SizedBox(
+          height: 200,
+          child: PageView.builder(
+            controller: _pageController,
+            itemCount: _slides.length,
+            physics: const BouncingScrollPhysics(),
+            onPageChanged: (i) => setState(() => _page = i),
+            itemBuilder: (context, i) {
+              final s = _slides[i];
+              return Padding(
+                padding: const EdgeInsets.only(left: 6, right: 6, bottom: 4),
+                child: _DiscoverSlideCard(
+                  slide: s,
+                  onTap: () => _openDiscover(context, i),
+                ),
+              );
+            },
+          ),
+        ),
+        const SizedBox(height: 6),
+        Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: List.generate(_slides.length, (i) {
+            final on = i == _page;
+            return AnimatedContainer(
+              duration: const Duration(milliseconds: 220),
+              margin: const EdgeInsets.symmetric(horizontal: 3),
+              width: on ? 18 : 7,
+              height: 7,
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(8),
+                color: on ? _maroon : const Color(0xFFE0D4D4),
+              ),
+            );
+          }),
+        ),
+      ],
+    );
+  }
+
+  void _openDiscover(BuildContext context, int i) {
+    switch (i) {
+      case 0:
+        Navigator.of(context).push(
+          MaterialPageRoute<void>(
+            fullscreenDialog: true,
+            builder: (_) => const VirtualTryOnLandingPage(),
+          ),
+        );
+        break;
+      case 1:
+        Navigator.of(context).push(
+          MaterialPageRoute<void>(
+            builder: (_) => const EnhancedAIAssistantScreen(),
+          ),
+        );
+        break;
+      default:
+        Navigator.of(context).push(
+          MaterialPageRoute<void>(
+            builder: (_) => const HairStyleMatcherScreen(),
+          ),
+        );
+    }
+  }
+}
+
+class _DiscoverSlide {
+  final String bannerAsset;
+  final String title;
+  final String subtitle;
+  final Color accent;
+  final Color shadowColor;
+
+  const _DiscoverSlide({
+    required this.bannerAsset,
+    required this.title,
+    required this.subtitle,
+    required this.accent,
+    required this.shadowColor,
+  });
+}
+
+class _DiscoverSlideCard extends StatelessWidget {
+  final _DiscoverSlide slide;
+  final VoidCallback onTap;
+
+  const _DiscoverSlideCard({
+    required this.slide,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      elevation: 8,
+      shadowColor: slide.shadowColor.withValues(alpha: 0.55),
+      borderRadius: BorderRadius.circular(22),
+      clipBehavior: Clip.antiAlias,
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(22),
+        child: Stack(
+          fit: StackFit.expand,
+          children: [
+            Image.asset(
+              slide.bannerAsset,
+              fit: BoxFit.cover,
+              alignment: Alignment.center,
+              errorBuilder: (_, __, ___) => ColoredBox(
+                color: slide.shadowColor,
+                child: const Center(
+                  child: Icon(Icons.image_not_supported_outlined,
+                      color: Colors.white54, size: 48),
+                ),
+              ),
+            ),
+            Positioned.fill(
+              child: DecoratedBox(
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    begin: Alignment.topCenter,
+                    end: Alignment.bottomCenter,
+                    colors: [
+                      Colors.black.withValues(alpha: 0.02),
+                      Colors.black.withValues(alpha: 0.18),
+                      Colors.black.withValues(alpha: 0.62),
+                    ],
+                    stops: const [0.0, 0.42, 1.0],
+                  ),
+                ),
+              ),
+            ),
+            Positioned(
+              left: 18,
+              right: 18,
+              bottom: 16,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 10, vertical: 4),
+                    decoration: BoxDecoration(
+                      color: slide.accent.withValues(alpha: 0.95),
+                      borderRadius: BorderRadius.circular(20),
+                    ),
+                    child: const Text(
+                      'Try it',
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontWeight: FontWeight.w800,
+                        fontSize: 11,
+                        letterSpacing: 0.6,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  Text(
+                    slide.title,
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontWeight: FontWeight.w800,
+                      fontSize: 20,
+                      height: 1.1,
+                      letterSpacing: 0.2,
+                      shadows: [
+                        Shadow(
+                          color: Color(0x66000000),
+                          blurRadius: 8,
+                          offset: Offset(0, 1),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    slide.subtitle,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      color: Colors.white.withValues(alpha: 0.95),
+                      fontSize: 13,
+                      height: 1.25,
+                      shadows: const [
+                        Shadow(
+                          color: Color(0x66000000),
+                          blurRadius: 6,
+                          offset: Offset(0, 1),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            Positioned(
+              top: 12,
+              right: 14,
+              child: Icon(
+                Icons.arrow_forward_rounded,
+                color: Colors.white.withValues(alpha: 0.9),
+                size: 26,
+                shadows: const [
+                  Shadow(color: Color(0x66000000), blurRadius: 6),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// Large image product carousel — swipe to browse picks, tap for detail.
+class _FeaturedProductsSwipe extends StatefulWidget {
+  final List<Product> products;
+
+  const _FeaturedProductsSwipe({required this.products});
+
+  @override
+  State<_FeaturedProductsSwipe> createState() => _FeaturedProductsSwipeState();
+}
+
+class _FeaturedProductsSwipeState extends State<_FeaturedProductsSwipe> {
+  late final PageController _ctrl = PageController(viewportFraction: 0.86);
+  int _idx = 0;
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (widget.products.isEmpty) return const SizedBox.shrink();
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 6, 16, 8),
+          child: Row(
+            children: [
+              Icon(Icons.local_mall_outlined,
+                  size: 20, color: _maroon.withValues(alpha: 0.9)),
+              const SizedBox(width: 8),
+              const Text(
+                'Featured',
+                style: TextStyle(
+                  fontSize: 16,
+                  fontWeight: FontWeight.w800,
+                  color: _ink,
+                  letterSpacing: 0.2,
+                ),
+              ),
+              const Spacer(),
+              Text(
+                '${widget.products.length} items',
+                style: TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w600,
+                  color: _muted.withValues(alpha: 0.85),
+                ),
+              ),
+            ],
+          ),
+        ),
+        SizedBox(
+          height: 268,
+          child: PageView.builder(
+            controller: _ctrl,
+            itemCount: widget.products.length,
+            physics: const BouncingScrollPhysics(),
+            onPageChanged: (i) => setState(() => _idx = i),
+            itemBuilder: (context, i) {
+              final p = widget.products[i];
+              return Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 6),
+                child: Material(
+                  elevation: 5,
+                  shadowColor: Colors.black.withValues(alpha: 0.2),
+                  borderRadius: BorderRadius.circular(22),
+                  clipBehavior: Clip.antiAlias,
+                  child: InkWell(
+                    onTap: () {
+                      Navigator.of(context).push(
+                        MaterialPageRoute<void>(
+                          builder: (_) => ProductDetailPage(product: p),
+                        ),
+                      );
+                    },
+                    child: Stack(
+                      fit: StackFit.expand,
+                      children: [
+                        ColoredBox(
+                          color: const Color(0xFFF8F0F0),
+                          child: _ProductImage(
+                            imageUrl: p.imageUrl,
+                            imagePath: p.imagePath,
+                            width: 600,
+                            height: 600,
+                            fit: BoxFit.cover,
+                          ),
+                        ),
+                        Positioned.fill(
+                          child: DecoratedBox(
+                            decoration: BoxDecoration(
+                              gradient: LinearGradient(
+                                begin: Alignment.topCenter,
+                                end: Alignment.bottomCenter,
+                                colors: [
+                                  Colors.transparent,
+                                  Colors.black.withValues(alpha: 0.08),
+                                  Colors.black.withValues(alpha: 0.72),
+                                ],
+                                stops: const [0.35, 0.55, 1],
+                              ),
+                            ),
+                          ),
+                        ),
+                        Positioned(
+                          left: 16,
+                          right: 16,
+                          bottom: 14,
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              if (p.brand.trim().isNotEmpty)
+                                Text(
+                                  p.brand.toUpperCase(),
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: TextStyle(
+                                    color: Colors.white.withValues(alpha: 0.82),
+                                    fontSize: 11,
+                                    fontWeight: FontWeight.w700,
+                                    letterSpacing: 1.1,
+                                  ),
+                                ),
+                              const SizedBox(height: 4),
+                              Text(
+                                p.name,
+                                maxLines: 2,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 18,
+                                  fontWeight: FontWeight.w800,
+                                  height: 1.15,
+                                ),
+                              ),
+                              const SizedBox(height: 8),
+                              Row(
+                                children: [
+                                  Text(
+                                    rs(p.price),
+                                    style: const TextStyle(
+                                      color: Color(0xFFFFE0B2),
+                                      fontSize: 17,
+                                      fontWeight: FontWeight.w800,
+                                    ),
+                                  ),
+                                  const SizedBox(width: 8),
+                                  ...List.generate(5, (k) => _star(p.rating, k)),
+                                  const Spacer(),
+                                  Container(
+                                    padding: const EdgeInsets.symmetric(
+                                        horizontal: 12, vertical: 6),
+                                    decoration: BoxDecoration(
+                                      color: Colors.white.withValues(alpha: 0.95),
+                                      borderRadius: BorderRadius.circular(20),
+                                    ),
+                                    child: Text(
+                                      'View',
+                                      style: TextStyle(
+                                        color: _maroon.withValues(alpha: 0.95),
+                                        fontWeight: FontWeight.w800,
+                                        fontSize: 12,
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              );
+            },
+          ),
+        ),
+        Padding(
+          padding: const EdgeInsets.only(top: 4),
+          child: Center(
+            child: Text(
+              '${_idx + 1} / ${widget.products.length}',
+              style: TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w700,
+                color: _muted.withValues(alpha: 0.9),
+              ),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
 class _HeaderBar extends StatelessWidget {
   const _HeaderBar({this.onSearchTap});
   final VoidCallback? onSearchTap;
@@ -944,11 +1503,6 @@ class _HeaderBar extends StatelessWidget {
             child: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
-                IconButton(
-                  tooltip: 'Search products',
-                  icon: const Icon(Icons.search_rounded, color: _ink),
-                  onPressed: onSearchTap,
-                ),
                 StreamBuilder<User?>(
                   stream: FirebaseAuth.instance.authStateChanges(),
                   builder: (context, authSnap) {
@@ -1005,6 +1559,11 @@ class _HeaderBar extends StatelessWidget {
                       },
                     );
                   },
+                ),
+                IconButton(
+                  tooltip: 'Search products',
+                  icon: const Icon(Icons.search_rounded, color: _ink),
+                  onPressed: onSearchTap,
                 ),
               ],
             ),
@@ -1694,7 +2253,7 @@ class _AiSheet extends StatelessWidget {
                   Navigator.push(
                     context,
                     MaterialPageRoute(
-                      builder: (context) => EnhancedAIAssistantScreen(),
+                      builder: (context) => const EnhancedAIAssistantScreen(),
                     ),
                   );
                 },

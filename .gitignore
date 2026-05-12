@@ -1,3 +1,7 @@
+# Local secrets at repo root (some IDEs validate env here)
+.env
+!.env.example
+
 # Flutter/Dart specific
 .dart_tool/
 .flutter-plugins

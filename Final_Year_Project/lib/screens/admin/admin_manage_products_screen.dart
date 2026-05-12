@@ -11,6 +11,7 @@ import 'admin_manage_orders_screen.dart';
 import 'admin_manage_reviews_screen.dart';
 import 'admin_manage_users_screen.dart';
 import 'widgets/admin_side_panel.dart';
+import '../../utils/price_format.dart';
 import '../../utils/seed_products.dart';
 import '../../widgets/firebase_image.dart';
 
@@ -909,7 +910,7 @@ class _AdminManageProductsScreenState extends State<AdminManageProductsScreen> {
           Expanded(
             flex: 2,
             child: Text(
-              'Rs ${price.toStringAsFixed(0)}',
+              formatRs(price),
               style: const TextStyle(fontWeight: FontWeight.w700),
               overflow: TextOverflow.ellipsis,
             ),

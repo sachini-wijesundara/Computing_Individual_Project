@@ -122,26 +122,37 @@ class FirebaseAuthService {
     }
   }
 
-  // Update user profile
+  // Update user profile (only non-null fields are written — avoids clearing name when updating photo only).
   static Future<void> updateUserProfile({
     String? displayName,
     String? photoURL,
   }) async {
     try {
       final user = _auth.currentUser;
-      if (user != null) {
+      if (user == null) return;
+
+      if (displayName != null && displayName.isNotEmpty) {
         await user.updateDisplayName(displayName);
-        if (photoURL != null) {
-          await user.updatePhotoURL(photoURL);
-        }
-        
-        // Update Firestore document
-        await _firestore.collection('users').doc(user.uid).update({
-          'displayName': displayName,
-          'photoURL': photoURL,
-          'updatedAt': FieldValue.serverTimestamp(),
-        });
       }
+      if (photoURL != null && photoURL.isNotEmpty) {
+        await user.updatePhotoURL(photoURL);
+      }
+
+      if ((displayName == null || displayName.isEmpty) &&
+          (photoURL == null || photoURL.isEmpty)) {
+        return;
+      }
+
+      final updates = <String, dynamic>{
+        'updatedAt': FieldValue.serverTimestamp(),
+      };
+      if (displayName != null) updates['displayName'] = displayName;
+      if (photoURL != null) updates['photoURL'] = photoURL;
+
+      await _firestore.collection('users').doc(user.uid).set(
+            updates,
+            SetOptions(merge: true),
+          );
     } catch (e) {
       print('Update profile error: $e');
       rethrow;
@@ -166,6 +177,7 @@ class FirebaseAuthService {
         },
         'tryOnHistory': [],
         'favoriteProducts': [],
+        'favourites': [],
       });
     } catch (e) {
       print('Create user document error: $e');
