@@ -1,3 +1,6 @@
+# IDE / local AI assistant config (do not commit)
+.claude/
+
 # Local course report PDFs (folder name includes trailing space)
 reports /
 
