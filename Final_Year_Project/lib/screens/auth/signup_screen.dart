@@ -89,6 +89,7 @@ class _SignUpEmailPageState extends State<SignUpEmailPage> {
                       child: Image.asset(
                         'assets/logo.png',
                         fit: BoxFit.contain,
+                        alignment: Alignment.center,
                         errorBuilder: (context, error, stackTrace) => const Icon(Icons.face_retouching_natural, size: 56, color: Colors.black54),
                       ),
                     ),

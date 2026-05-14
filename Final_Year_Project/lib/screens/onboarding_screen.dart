@@ -137,6 +137,7 @@ class _OnboardingScreenState extends State<OnboardingScreen>
               child: Center(
                 child: Column(
                   mainAxisAlignment: MainAxisAlignment.center,
+                  crossAxisAlignment: CrossAxisAlignment.center,
                   children: [
                   // Logo Animation
                   AnimatedBuilder(

@@ -12,10 +12,13 @@ import android.graphics.Path
 import android.graphics.PointF
 import android.graphics.PorterDuff
 import android.graphics.PorterDuffXfermode
+import android.graphics.Matrix
+import android.graphics.Rect
 import android.graphics.RectF
 import android.opengl.GLES20
 import android.opengl.GLSurfaceView
 import android.util.Log
+import android.view.Surface
 import android.view.View
 import android.widget.FrameLayout
 import androidx.annotation.MainThread
@@ -64,15 +67,25 @@ import javax.microedition.khronos.opengles.GL10
 import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
+import kotlin.math.pow
 import kotlin.math.roundToInt
 import kotlin.math.sin
 import kotlin.math.PI
 import kotlin.math.atan2
 import kotlin.math.sqrt
+import kotlin.math.hypot
 import org.tensorflow.lite.Interpreter
 
 private const val VIEW_TYPE = "native_lip_renderer/view"
 private const val CHANNEL_PREFIX = "native_lip_renderer"
+
+// Lip mesh indices — must match iOS `NativeLipRendererPlugin.drawLips` (evenOdd outer + inner hole).
+private val MP_LIP_OUTER_IOS = intArrayOf(
+  61, 185, 40, 39, 37, 0, 267, 269, 270, 409, 291, 375, 321, 405, 314, 17, 84, 181, 91, 146
+)
+private val MP_LIP_INNER_IOS = intArrayOf(
+  78, 191, 80, 81, 82, 13, 312, 311, 310, 415, 308, 324, 318, 402, 317, 14, 87, 178, 88, 95
+)
 private const val HAND_STATIC_CHANNEL = "la_vogue_vista/hand_landmarker"
 private const val CAMERA_PERMISSION_REQUEST = 9001
 
@@ -251,8 +264,15 @@ private class LipRendererFactory(
   private var activity: Activity? = null
   private var lastView: LipRendererPlatformView? = null
 
-  fun bindActivity(activity: Activity) { this.activity = activity }
-  fun unbindActivity() { this.activity = null }
+  fun bindActivity(activity: Activity) {
+    this.activity = activity
+    // Platform view may be created before ActivityAware fires; keep reference in sync.
+    lastView?.syncActivity(activity)
+  }
+  fun unbindActivity() {
+    this.activity = null
+    lastView?.syncActivity(null)
+  }
   fun dispose() { unbindActivity() }
 
   override fun create(context: Context, viewId: Int, args: Any?): PlatformView {
@@ -271,13 +291,129 @@ private class HairMaskOverlayView(context: Context) : View(context) {
   private val paint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
   private var hairBitmap: Bitmap? = null
 
-  fun drawHairMask(bmp: Bitmap?) { hairBitmap = bmp; postInvalidate() }
-  fun clear() { hairBitmap = null; postInvalidate() }
+  fun drawHairMask(bmp: Bitmap?) {
+    val prev = hairBitmap
+    hairBitmap = bmp
+    if (prev != null && prev !== bmp) prev.recycle()
+    visibility = if (bmp != null) View.VISIBLE else View.GONE
+    postInvalidate()
+  }
+  fun clear() {
+    hairBitmap?.recycle()
+    hairBitmap = null
+    postInvalidate()
+  }
 
   override fun onDraw(canvas: Canvas) {
     val bmp = hairBitmap ?: return
-    canvas.drawBitmap(bmp, null, RectF(0f, 0f, width.toFloat(), height.toFloat()), paint)
+    // Match iOS `hairMaskLayer.contentsGravity = .resizeAspectFill` + PreviewView FILL_CENTER:
+    // uniform scale and center-crop so mask pixels line up with the visible camera frame.
+    val vw = width.toFloat()
+    val vh = height.toFloat()
+    val bw = bmp.width.toFloat()
+    val bh = bmp.height.toFloat()
+    if (bw <= 0f || bh <= 0f) return
+    val scale = max(vw / bw, vh / bh)
+    val dw = bw * scale
+    val dh = bh * scale
+    val left = (vw - dw) / 2f
+    val top = (vh - dh) / 2f
+    canvas.drawBitmap(bmp, null, RectF(left, top, left + dw, top + dh), paint)
   }
+}
+
+/**
+ * Match iOS `selectHairConfidenceMask(from:)` in `NativeLipRendererPlugin.swift`:
+ * when two confidence masks exist, one is often a diffuse "background" map and the other
+ * localizes hair. Picking the wrong one paints colour on the forehead / face centre.
+ */
+private fun selectHairConfidenceMask(masks: List<MPImage>): MPImage {
+  if (masks.size <= 1) return masks[0]
+  val m0 = masks[0]
+  val m1 = masks[1]
+  if (m0.width != m1.width || m0.height != m1.height) return m0
+
+  fun floatData(mask: MPImage): FloatArray {
+    val bb = ByteBufferExtractor.extract(mask)
+    bb.rewind()
+    val fb = bb.asFloatBuffer()
+    val arr = FloatArray(fb.remaining())
+    fb.get(arr)
+    return arr
+  }
+
+  val w = m0.width
+  val h = m0.height
+  val fp0 = floatData(m0)
+  val fp1 = floatData(m1)
+
+  fun globalHighFraction(fp: FloatArray): Float {
+    var hi = 0
+    var tot = 0
+    val step = max(1, min(w, h) / 80)
+    var y = 0
+    while (y < h) {
+      var x = 0
+      while (x < w) {
+        tot++
+        if (fp[y * w + x] > 0.4f) hi++
+        x += step
+      }
+      y += step
+    }
+    return hi.toFloat() / max(1, tot)
+  }
+
+  fun meanTopBand(fp: FloatArray): Float {
+    val yMax = max(1, h / 8)
+    val step = max(1, min(w, h) / 96)
+    var sum = 0f
+    var n = 0
+    var y = 0
+    while (y < yMax) {
+      var x = 0
+      while (x < w) {
+        sum += fp[y * w + x]
+        n++
+        x += step
+      }
+      y += step
+    }
+    return if (n > 0) sum / n else 0f
+  }
+
+  val g0 = globalHighFraction(fp0)
+  val g1 = globalHighFraction(fp1)
+  if (abs(g0 - g1) > 0.08f) {
+    return if (g0 <= g1) m0 else m1
+  }
+  val t0 = meanTopBand(fp0)
+  val t1 = meanTopBand(fp1)
+  return if (t0 >= t1) m0 else m1
+}
+
+/**
+ * [ImageAnalysis] buffers are in sensor orientation; [PreviewView] shows rotation + (front) mirror.
+ * Face landmarks compensate via [mapNormToViewCover]; hair is a bitmap and must use the same
+ * display transform or the tint sits on the wrong region (e.g. forehead).
+ */
+private fun orientHairMaskLikePreview(source: Bitmap, rotationDegrees: Int, mirrorX: Boolean): Bitmap {
+  val rot = ((rotationDegrees % 360) + 360) % 360
+  if (rot == 0 && !mirrorX) return source
+  var b = source
+  if (rot != 0) {
+    val m = Matrix().apply { postRotate(rot.toFloat()) }
+    val r = Bitmap.createBitmap(b, 0, 0, b.width, b.height, m, true)
+    b.recycle()
+    b = r
+  }
+  if (mirrorX) {
+    val m = Matrix().apply { postScale(-1f, 1f, b.width / 2f, b.height / 2f) }
+    val r = Bitmap.createBitmap(b, 0, 0, b.width, b.height, m, true)
+    b.recycle()
+    b = r
+  }
+  return b
 }
 
 // Shared by NailPolishRenderer and LipRendererPlatformView (hair / photo paths).
@@ -707,6 +843,7 @@ private class LipRendererPlatformView(
   private val container: FrameLayout = FrameLayout(appContext)
   private val previewView: PreviewView = PreviewView(appContext)
   private val glOverlay: LipMaskGLSurfaceView = LipMaskGLSurfaceView(appContext)
+  private val makeupVectorOverlay = MakeupVectorOverlayView(appContext)
   private val hairMaskOverlay: HairMaskOverlayView = HairMaskOverlayView(appContext)
   private val nailMaskOverlay: NailMaskOverlayView = NailMaskOverlayView(appContext)
   private val nailSegmentOverlay: NailSegmentOverlayView = NailSegmentOverlayView(appContext)
@@ -745,19 +882,39 @@ private class LipRendererPlatformView(
   private var useLayeredLook = false
   private var lookLayers: List<Triple<Int, Float, String>> = emptyList()
 
+  // Live face: temporal smooth (view px) + VIDEO landmarker timestamps.
+  private var smoothedOuterLip: Array<PointF>? = null
+  private var smoothedInnerLip: Array<PointF>? = null
+  private var smoothedFaceOval: Array<PointF>? = null
+  private var smoothedLeftEye: Array<PointF>? = null
+  private var smoothedRightEye: Array<PointF>? = null
+  @Volatile private var faceVideoTimestampMs = 0L
+
   init {
     methodChannel.setMethodCallHandler(this)
     eventChannel.setStreamHandler(this)
     previewView.scaleType = PreviewView.ScaleType.FILL_CENTER
+    // TextureView path: more consistent overlay alignment vs SurfaceView + GL on many OEMs.
+    previewView.implementationMode = PreviewView.ImplementationMode.COMPATIBLE
 
     container.addView(previewView, FrameLayout.LayoutParams(-1, -1))
     container.addView(glOverlay, FrameLayout.LayoutParams(-1, -1))
+    container.addView(makeupVectorOverlay, FrameLayout.LayoutParams(-1, -1))
     container.addView(hairMaskOverlay, FrameLayout.LayoutParams(-1, -1))
     container.addView(nailSegmentOverlay, FrameLayout.LayoutParams(-1, -1))  // TFLite mask (preferred)
     container.addView(nailMaskOverlay, FrameLayout.LayoutParams(-1, -1))     // Landmark fallback
     hairMaskOverlay.alpha = 1f
     nailMaskOverlay.visibility = View.GONE
     nailSegmentOverlay.visibility = View.GONE
+    makeupVectorOverlay.visibility = View.GONE
+  }
+
+  /** [LipRendererFactory] may receive the [Activity] after this view is created; keep in sync. */
+  fun syncActivity(a: Activity?) {
+    activity = a
+    if (startRequested && hasCameraPermission()) {
+      startCameraIfReady()
+    }
   }
 
   override fun getView() = container
@@ -783,6 +940,13 @@ private class LipRendererPlatformView(
     nailRenderer.close()
   }
 
+  /** Normalize AR category from Flutter (e.g. legacy "rouge" → blush vector path). */
+  private fun canonicalArCategory(raw: String): String {
+    val c = raw.trim().lowercase()
+    if (c == "cmd_rouge" || c == "rouge") return "cmd_blush"
+    return c
+  }
+
   override fun onMethodCall(call: MethodCall, result: MethodChannel.Result) {
     when (call.method) {
       "start" -> { startRequested = true; startCameraIfReady(); result.success(null) }
@@ -791,14 +955,20 @@ private class LipRendererPlatformView(
         val args = call.arguments as? Map<*, *>
         val shade = (args?.get("shade") as? Number)?.toInt() ?: 0
         val intensity = (args?.get("intensity") as? Number)?.toFloat() ?: 0.7f
-        val category = args?.get("category") as? String ?: "cmd_lipstick"
-        val compare = args?.get("isCompareMode") as? Boolean ?: false
+        val categoryRaw = args?.get("category") as? String ?: "cmd_lipstick"
+        val category = canonicalArCategory(categoryRaw)
+        val compare = when (val v = args?.get("isCompareMode")) {
+          is Boolean -> v
+          is Number -> v.toInt() != 0
+          else -> false
+        }
         val hairShape = args?.get("hairStyleShape") as? String
         if (hairShape != null) currentHairStyleShape = hairShape.lowercase()
         currentNailArtStyle = (args?.get("nailArtStyle") as? Number)?.toInt() ?: 0
         currentNailShape = (args?.get("nailShape") as? Number)?.toInt() ?: 0
 
         val wasNails = currentCategory == "cmd_nails"
+        val wasHair = currentCategory == "cmd_haircolor" || currentCategory == "cmd_hairstyle"
         currentCategory = category
         useLayeredLook = false
         lookLayers = emptyList()
@@ -807,6 +977,9 @@ private class LipRendererPlatformView(
         currentIntensity = intensity
 
         val isNails = category == "cmd_nails"
+        val isHair = category == "cmd_haircolor" || category == "cmd_hairstyle"
+        if (wasHair != isHair || wasNails != isNails) resetFaceSmoothing()
+
         if (wasNails && !isNails) {
           handLandmarker?.close()
           handLandmarker = null
@@ -831,6 +1004,8 @@ private class LipRendererPlatformView(
           if (isNails) {
             glOverlay.hideAllOverlays()
             hairMaskOverlay.clear()
+            makeupVectorOverlay.clear()
+            makeupVectorOverlay.visibility = View.GONE
             nailSegmentOverlay.visibility = View.VISIBLE
             nailMaskOverlay.visibility = View.VISIBLE  // fallback if model not loaded
           } else {
@@ -838,6 +1013,23 @@ private class LipRendererPlatformView(
             nailSegmentOverlay.visibility = View.GONE
             nailMaskOverlay.clear()
             nailMaskOverlay.visibility = View.GONE
+            when {
+              isHair -> {
+                makeupVectorOverlay.clear()
+                makeupVectorOverlay.visibility = View.GONE
+                glOverlay.hideAllOverlays()
+                hairMaskOverlay.visibility = View.VISIBLE
+              }
+              usesCanvasOverlay(category) -> {
+                makeupVectorOverlay.visibility = View.VISIBLE
+                glOverlay.hideAllOverlays()
+              }
+              else -> {
+                makeupVectorOverlay.clear()
+                makeupVectorOverlay.visibility = View.GONE
+                glOverlay.showOverlays()
+              }
+            }
           }
         }
 
@@ -849,20 +1041,24 @@ private class LipRendererPlatformView(
           result.success(null)
           return@onMethodCall
         }
-        val compare = args["isCompareMode"] as? Boolean ?: false
+        val compare = when (val v = args["isCompareMode"]) {
+          is Boolean -> v
+          is Number -> v.toInt() != 0
+          else -> false
+        }
         val raw = args["layers"] as? List<*> ?: emptyList<Any>()
         val layers = mutableListOf<Triple<Int, Float, String>>()
         for (item in raw) {
           val m = item as? Map<*, *> ?: continue
           val shade = (m["shade"] as? Number)?.toInt() ?: continue
           val intensity = (m["intensity"] as? Number)?.toFloat() ?: 0.4f
-          val category = (m["category"] as? String) ?: continue
+          val category = canonicalArCategory((m["category"] as? String) ?: continue)
           if (category.lowercase() == "cmd_none") continue
           layers.add(Triple(shade, intensity, category))
         }
         val capped = if (layers.size > 10) layers.take(10) else layers
         lookLayers = capped
-        useLayeredLook = true
+        useLayeredLook = capped.isNotEmpty()
         glOverlay.setLook(capped, compare)
         result.success(null)
       }
@@ -921,8 +1117,16 @@ private class LipRendererPlatformView(
       "setCalibration" -> {
         val args = call.arguments as? Map<*, *>
         val split = (args?.get("splitPosition") as? Number)?.toFloat() ?: 0.5f
+        (when (val v = args?.get("isCompareMode")) {
+          is Boolean -> v
+          is Number -> v.toInt() != 0
+          else -> null
+        })?.let { isCompareMode = it }
         currentSplitPosition = split
-        glOverlay.setCalibration(split)
+        glOverlay.setCalibration(split, isCompareMode)
+        android.os.Handler(android.os.Looper.getMainLooper()).post {
+          makeupVectorOverlay.applyCompareCalibration(isCompareMode, split)
+        }
         result.success(null)
       }
       else -> result.notImplemented()
@@ -932,11 +1136,56 @@ private class LipRendererPlatformView(
   override fun onListen(args: Any?, events: EventChannel.EventSink?) { eventSink = events; if (startRequested) startCameraIfReady() }
   override fun onCancel(args: Any?) { eventSink = null }
 
-  fun onPermissionResult(granted: Boolean) { if (granted) startCameraIfReady() }
+  fun onPermissionResult(granted: Boolean) {
+    if (granted) {
+      startCameraIfReady()
+    } else {
+      Log.w("LipRenderer", "CAMERA permission denied")
+      eventSink?.success(
+        mapOf(
+          "type" to "error",
+          "code" to "permission_denied",
+          "message" to "Camera permission is required for live try-on.",
+        ),
+      )
+    }
+  }
 
   private fun startCameraIfReady() {
-    val lifecycleOwner = (activity as? LifecycleOwner) ?: return
-    if (!startRequested || !hasCameraPermission()) return
+    if (!startRequested) return
+
+    if (!hasCameraPermission()) {
+      val act = activity
+      if (act != null) {
+        ActivityCompat.requestPermissions(
+          act,
+          arrayOf(Manifest.permission.CAMERA),
+          CAMERA_PERMISSION_REQUEST,
+        )
+      } else {
+        Log.w("LipRenderer", "Cannot request CAMERA: activity is null")
+        eventSink?.success(
+          mapOf(
+            "type" to "error",
+            "code" to "no_activity",
+            "message" to "Camera is not ready yet. Close and reopen live try-on.",
+          ),
+        )
+      }
+      return
+    }
+
+    val lifecycleOwner = (activity as? LifecycleOwner) ?: run {
+      Log.w("LipRenderer", "Activity is not a LifecycleOwner")
+      eventSink?.success(
+        mapOf(
+          "type" to "error",
+          "code" to "no_lifecycle",
+          "message" to "Camera requires an active screen.",
+        ),
+      )
+      return
+    }
 
     val providerFuture = ProcessCameraProvider.getInstance(appContext)
     providerFuture.addListener({
@@ -946,8 +1195,13 @@ private class LipRendererPlatformView(
   }
 
   private fun bindCamera(provider: ProcessCameraProvider, lifecycleOwner: LifecycleOwner) {
-    val preview = Preview.Builder().build().also { it.setSurfaceProvider(previewView.surfaceProvider) }
+    val targetRot = previewView.display?.rotation ?: Surface.ROTATION_0
+    val preview = Preview.Builder()
+      .setTargetRotation(targetRot)
+      .build()
+      .also { it.setSurfaceProvider(previewView.surfaceProvider) }
     analyzer = ImageAnalysis.Builder()
+      .setTargetRotation(targetRot)
       .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
       .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_RGBA_8888)
       .build()
@@ -958,13 +1212,21 @@ private class LipRendererPlatformView(
       else CameraSelector.DEFAULT_FRONT_CAMERA
 
     provider.unbindAll()
+    resetFaceSmoothing()
+    faceVideoTimestampMs = 0L
     provider.bindToLifecycle(lifecycleOwner, selector, preview, analyzer)
     cameraProvider = provider
     nailVideoTimestamp = 0L
     eventSink?.success(mapOf("type" to "ready"))
   }
 
-  private fun stopCamera() { cameraProvider?.unbindAll(); analyzer?.clearAnalyzer(); cameraProvider = null }
+  private fun stopCamera() {
+    cameraProvider?.unbindAll()
+    analyzer?.clearAnalyzer()
+    cameraProvider = null
+    resetFaceSmoothing()
+    faceVideoTimestampMs = 0L
+  }
   private fun hasCameraPermission() = ContextCompat.checkSelfPermission(appContext, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
 
   // ─── Route per-frame processing based on mode ─────────────────────────────
@@ -1051,6 +1313,18 @@ private class LipRendererPlatformView(
     val dy = (vh - rh * scale) / 2f
     return PointF(bx * scale + dx, by * scale + dy)
   }
+
+  /** Normalized landmark (same space as MediaPipe on [ImageAnalysis] buffer) → [PreviewView] px. */
+  private fun mapNormListToPreview(
+    norm: List<PointF>,
+    iw: Int,
+    ih: Int,
+    rot: Int,
+    vw: Float,
+    vh: Float,
+    mirrorX: Boolean,
+  ): List<PointF> =
+    norm.map { p -> mapNormToViewCover(p.x, p.y, iw, ih, rot, vw, vh, mirrorX) }
 
   private fun ensureHandVideoLandmarker(): Boolean {
     if (handLandmarker != null) return true
@@ -1210,24 +1484,122 @@ private class LipRendererPlatformView(
     else if (last >= 35) smoothRange(last - 9, last, 5)
   }
 
+  private fun resetFaceSmoothing() {
+    smoothedOuterLip = null
+    smoothedInnerLip = null
+    smoothedFaceOval = null
+    smoothedLeftEye = null
+    smoothedRightEye = null
+  }
+
+  /**
+   * Adaptive EMA on view-space lip/face polys (same idea as iOS nail TIP smoothing):
+   * still frames get heavy smoothing; fast head motion follows raw mesh more.
+   *
+   * @param blushMode when true ([cmd_blush]), slightly faster tracking on cheek polys than lipstick.
+   */
+  private fun emaSmoothViewPolygon(
+    raw: List<PointF>,
+    prev: Array<PointF>?,
+    vw: Float,
+    vh: Float,
+    foundationMode: Boolean = false,
+    blushMode: Boolean = false,
+  ): Pair<List<PointF>, Array<PointF>> {
+    val n = raw.size
+    val denom = max(vw, vh).coerceAtLeast(1f)
+    if (prev == null || prev.size != n) {
+      val arr = Array(n) { i -> PointF(raw[i].x, raw[i].y) }
+      return Pair(List(n) { i -> PointF(raw[i].x, raw[i].y) }, arr)
+    }
+    var sumD = 0f
+    for (i in 0 until n) {
+      sumD += hypot(raw[i].x - prev[i].x, raw[i].y - prev[i].y)
+    }
+    val meanD = sumD / n.toFloat().coerceAtLeast(1f)
+    var normMotion = (meanD / denom).coerceIn(0f, 1f)
+    if (foundationMode) {
+      var rcx = 0f
+      var rcy = 0f
+      var pcx = 0f
+      var pcy = 0f
+      for (i in 0 until n) {
+        rcx += raw[i].x
+        rcy += raw[i].y
+        pcx += prev[i].x
+        pcy += prev[i].y
+      }
+      val inv = 1f / n.toFloat()
+      rcx *= inv
+      rcy *= inv
+      pcx *= inv
+      pcy *= inv
+      val centroidMotion = hypot(rcx - pcx, rcy - pcy) / denom
+      normMotion = max(normMotion, (centroidMotion * 2.4f).coerceIn(0f, 1f))
+    }
+    val a = when {
+      foundationMode -> (0.40f + 0.54f * normMotion).coerceIn(0.28f, 0.97f)
+      blushMode -> (0.30f + 0.63f * normMotion).coerceIn(0.17f, 0.92f)
+      else -> (0.26f + 0.64f * normMotion).coerceIn(0.14f, 0.93f)
+    }
+    val out = Array(n) { i ->
+      val r = raw[i]
+      val p = prev[i]
+      PointF(a * r.x + (1f - a) * p.x, a * r.y + (1f - a) * p.y)
+    }
+    return Pair(out.map { PointF(it.x, it.y) }, out)
+  }
+
+  private fun usesVectorMakeup(cat: String): Boolean =
+    when (cat.trim().lowercase()) {
+      "cmd_blush", "cmd_highlight", "cmd_eyeshadow", "cmd_eye", "cmd_mascara",
+      "cmd_eyebrow", "cmd_eyeliner", "cmd_lipliner" -> true
+      else -> false
+    }
+
+  /** Canvas overlay: vector makeup **or** full-face foundation (GL triangle fan is wrong on concave face). */
+  private fun usesCanvasOverlay(cat: String): Boolean =
+    usesVectorMakeup(cat) || isFoundationCategory(cat)
+
   // ─── Face landmarks → GL lip/makeup overlay ───────────────────────────────
   private fun runFaceMesh(mpImage: MPImage, image: ImageProxy) {
     if (!ensureLandmarker()) { processing = false; image.close(); return }
 
-    val result = faceLandmarker?.detect(mpImage)
+    val tsMs = (image.imageInfo.timestamp / 1_000_000L).coerceAtLeast(0L)
+    faceVideoTimestampMs = if (tsMs > faceVideoTimestampMs) tsMs else faceVideoTimestampMs + 16L
+
+    val result = try {
+      faceLandmarker?.detectForVideo(mpImage, faceVideoTimestampMs)
+    } catch (t: Throwable) {
+      Log.e("LipRenderer", "detectForVideo", t)
+      null
+    }
     val landmarks = result?.faceLandmarks()?.firstOrNull()
 
-    if (landmarks != null) {
-      val outerLipIdx = intArrayOf(61, 146, 91, 181, 84, 17, 314, 405, 321, 375, 291, 308, 324, 318, 402, 317, 14, 87, 178, 88)
-      val innerLipIdx = intArrayOf(78, 95, 88, 178, 87, 14, 317, 402, 318, 324)
+    if (landmarks == null) {
+      resetFaceSmoothing()
+      android.os.Handler(android.os.Looper.getMainLooper()).post {
+        makeupVectorOverlay.clear()
+      }
+    } else if (previewView.width >= 2 && previewView.height >= 2) {
+      val outerLipIdx = MP_LIP_OUTER_IOS
+      val innerLipIdx = MP_LIP_INNER_IOS
       // 109→151→338 only; avoid 9/337/108 (re-entrant path + evenOdd = forehead hole).
       val faceOvalIdx = intArrayOf(338, 297, 332, 284, 251, 389, 356, 454, 323, 361, 288, 397, 365, 379, 378, 400, 377, 152, 148, 176, 149, 150, 136, 172, 58, 132, 93, 234, 127, 162, 21, 54, 103, 67, 109, 151, 10)
       val leftEyeIdx  = intArrayOf(33, 7, 163, 144, 145, 153, 154, 155, 133, 173, 157, 158, 159, 160, 161, 246)
       val rightEyeIdx = intArrayOf(362, 382, 381, 380, 374, 373, 390, 249, 263, 466, 388, 387, 386, 385, 384, 398)
 
-      val outerLip = outerLipIdx.map { PointF(landmarks[it].x(), landmarks[it].y()) }
-      val innerLip = innerLipIdx.map { PointF(landmarks[it].x(), landmarks[it].y()) }
-      val faceOval = if (currentCategory == "cmd_face" ||
+      val vw = previewView.width.toFloat().coerceAtLeast(1f)
+      val vh = previewView.height.toFloat().coerceAtLeast(1f)
+      val rot = image.imageInfo.rotationDegrees
+      val iw = image.width
+      val ih = image.height
+      // Front camera: mirror overlay to match PreviewView selfie mirroring; back (nails) = false.
+      val mirrorX = !useBackCameraNails
+
+      val outerNorm = outerLipIdx.map { PointF(landmarks[it].x(), landmarks[it].y()) }
+      val innerNorm = innerLipIdx.map { PointF(landmarks[it].x(), landmarks[it].y()) }
+      val faceNorm = if (currentCategory == "cmd_face" ||
         currentCategory.contains("foundation", ignoreCase = true) ||
         currentCategory.contains("concealer", ignoreCase = true)
       ) {
@@ -1235,11 +1607,85 @@ private class LipRendererPlatformView(
       } else {
         faceOvalIdx.map { PointF(landmarks[it].x(), landmarks[it].y()) }
       }
-      val leftEye  = leftEyeIdx.map  { PointF(landmarks[it].x(), landmarks[it].y()) }
-      val rightEye = rightEyeIdx.map { PointF(landmarks[it].x(), landmarks[it].y()) }
+      val leftNorm = leftEyeIdx.map { PointF(landmarks[it].x(), landmarks[it].y()) }
+      val rightNorm = rightEyeIdx.map { PointF(landmarks[it].x(), landmarks[it].y()) }
 
-      glOverlay.setLandmarks(outerLip, innerLip, faceOval, leftEye, rightEye,
-        image.width, image.height, image.imageInfo.rotationDegrees)
+      val outerRaw = mapNormListToPreview(outerNorm, iw, ih, rot, vw, vh, mirrorX)
+      val innerRaw = mapNormListToPreview(innerNorm, iw, ih, rot, vw, vh, mirrorX)
+      val faceRaw = mapNormListToPreview(faceNorm, iw, ih, rot, vw, vh, mirrorX)
+      val leftRaw = mapNormListToPreview(leftNorm, iw, ih, rot, vw, vh, mirrorX)
+      val rightRaw = mapNormListToPreview(rightNorm, iw, ih, rot, vw, vh, mirrorX)
+
+      val foundationSmooth = isFoundationCategory(currentCategory)
+      val blushSmooth = currentCategory.trim().lowercase() == "cmd_blush"
+      val (outerLip, oNext) = emaSmoothViewPolygon(outerRaw, smoothedOuterLip, vw, vh, foundationSmooth, blushSmooth)
+      val (innerLip, iNext) = emaSmoothViewPolygon(innerRaw, smoothedInnerLip, vw, vh, foundationSmooth, blushSmooth)
+      val (faceOval, fNext) = emaSmoothViewPolygon(faceRaw, smoothedFaceOval, vw, vh, foundationSmooth, blushSmooth)
+      val (leftEye, leNext) = emaSmoothViewPolygon(leftRaw, smoothedLeftEye, vw, vh, foundationSmooth, blushSmooth)
+      val (rightEye, reNext) = emaSmoothViewPolygon(rightRaw, smoothedRightEye, vw, vh, foundationSmooth, blushSmooth)
+      smoothedOuterLip = oNext
+      smoothedInnerLip = iNext
+      smoothedFaceOval = fNext
+      smoothedLeftEye = leNext
+      smoothedRightEye = reNext
+
+      val catKey = currentCategory.trim().lowercase()
+      when {
+        usesVectorMakeup(catKey) -> {
+          val nLm = landmarks.size
+          val lmPts = Array(nLm) { j ->
+            mapNormToViewCover(
+              landmarks[j].x(),
+              landmarks[j].y(),
+              iw, ih, rot, vw, vh, mirrorX,
+            )
+          }
+          android.os.Handler(android.os.Looper.getMainLooper()).post {
+            val c = currentCategory.trim().lowercase()
+            if (!usesVectorMakeup(c)) return@post
+            makeupVectorOverlay.visibility = View.VISIBLE
+            makeupVectorOverlay.update(
+              lmPts,
+              currentCategory,
+              currentShadeColor,
+              currentIntensity,
+              isCompareMode,
+              currentSplitPosition,
+            )
+            glOverlay.hideAllOverlays()
+          }
+        }
+        isFoundationCategory(currentCategory) -> {
+          android.os.Handler(android.os.Looper.getMainLooper()).post {
+            if (!isFoundationCategory(currentCategory)) return@post
+            makeupVectorOverlay.updateFoundationPolys(
+              faceOval,
+              outerLip,
+              innerLip,
+              leftEye,
+              rightEye,
+              currentCategory,
+              currentShadeColor,
+              currentIntensity,
+              isCompareMode,
+              currentSplitPosition,
+            )
+            makeupVectorOverlay.visibility = View.VISIBLE
+            glOverlay.hideAllOverlays()
+          }
+        }
+        else -> {
+          android.os.Handler(android.os.Looper.getMainLooper()).post {
+            val c = currentCategory.trim().lowercase()
+            if (!usesCanvasOverlay(c)) {
+              makeupVectorOverlay.clear()
+              makeupVectorOverlay.visibility = View.GONE
+              glOverlay.showOverlays()
+            }
+          }
+          glOverlay.setLandmarks(outerLip, innerLip, faceOval, leftEye, rightEye, vw, vh)
+        }
+      }
     }
 
     processing = false
@@ -1258,10 +1704,15 @@ private class LipRendererPlatformView(
         buildHairColorBitmap(result)
       }
       val intensity = currentIntensity
+      val rot = image.imageInfo.rotationDegrees
+      val mirrorX = !useBackCameraNails
+      val oriented = coloredBitmap?.let { orientHairMaskLikePreview(it, rot, mirrorX) }
       android.os.Handler(android.os.Looper.getMainLooper()).post {
-        hairMaskOverlay.drawHairMask(coloredBitmap)
+        hairMaskOverlay.drawHairMask(oriented)
         hairMaskOverlay.alpha = intensity   // intensity = global strength, like lipstick alpha
         glOverlay.hideAllOverlays()
+        makeupVectorOverlay.clear()
+        makeupVectorOverlay.visibility = View.GONE
       }
     } catch (t: Throwable) {
       Log.e("HairSegmenter", "Segmentation error", t)
@@ -1273,24 +1724,21 @@ private class LipRendererPlatformView(
 
   // ─── Luminance-boosted HSL hair colour bitmap ─────────────────────────────
   //
-  // Why previous attempts looked unrealistic on dark hair:
-  //   • colorBlendMode / pure overlay: dark hair (L≈0.10) stays near-black even
-  //     after hue/saturation replacement → auburn barely visible.
-  //
-  // This version mirrors how real hair dye works:
-  //   1. Sample the ACTUAL camera pixel for each hair position
-  //   2. Convert to HSL
-  //   3. Apply target H + S  (the dye colour)
-  //   4. Lift luminance: result_L = max(srcL, targetL × 0.75)
-  //      → dark roots rise to 75% of the target's brightness (bleach simulation)
-  //      → existing highlights (srcL > 0.75×targetL) keep their advantage
-  //   5. Pre-multiply by confidence for smooth edge feathering
-  //   6. View.alpha = currentIntensity (global strength knob)
-  private fun buildHairColorBitmap(result: ImageSegmenterResult): Bitmap? {
+  // Aligned with iOS `processHairMask` (plain hair, no style shape):
+  //   • Saturation: blend 75% source + 25% target (accentBoost) so colour follows
+  //     natural fibre variation instead of flat poster dye.
+  //   • Luminance: max(srcL, tgtL×0.75) then + v×0.04 toward crown (subtle depth).
+  //   • Mask: smoothstep on confidence; edge lo = 0.18 to match iOS hair-colour path.
+  //   • View.alpha = intensity (global strength).
+  private fun buildHairColorBitmap(
+    result: ImageSegmenterResult,
+    sourceBmp: Bitmap? = null,
+    hairShadeColor: Int = currentShadeColor,
+  ): Bitmap? {
     val masks = result.confidenceMasks().orElse(null) ?: return null
     if (masks.isEmpty()) return null
 
-    val hairMaskImg = if (masks.size > 1) masks[1] else masks[0]
+    val hairMaskImg = selectHairConfidenceMask(masks)
     val maskW = hairMaskImg.width
     val maskH = hairMaskImg.height
     if (maskW <= 0 || maskH <= 0) return null
@@ -1301,12 +1749,12 @@ private class LipRendererPlatformView(
     val floatData = FloatArray(floatBuffer.capacity())
     floatBuffer.get(floatData)
 
-    val tRf = Color.red(currentShadeColor)   / 255f
-    val tGf = Color.green(currentShadeColor) / 255f
-    val tBf = Color.blue(currentShadeColor)  / 255f
+    val tRf = Color.red(hairShadeColor)   / 255f
+    val tGf = Color.green(hairShadeColor) / 255f
+    val tBf = Color.blue(hairShadeColor)  / 255f
     val (tgtH, tgtS, tgtL) = rgbToHSL(tRf, tGf, tBf)
 
-    val srcBmp = rgbaBitmap
+    val srcBmp = sourceBmp ?: rgbaBitmap
     val srcW   = srcBmp?.width  ?: 1
     val srcH   = srcBmp?.height ?: 1
 
@@ -1320,14 +1768,15 @@ private class LipRendererPlatformView(
     for (i in 0 until procW * procH) {
       val px = i % procW
       val py = i / procW
+      val v = py.toFloat() / max(1f, procH.toFloat())
 
       // Sample confidence mask at 4× step
       val mx   = min(maskW - 1, px * scale)
       val my   = min(maskH - 1, py * scale)
       var conf = floatData[my * maskW + mx].coerceIn(0f, 1f)
 
-      conf = if (conf < 0.20f) 0f
-             else { val t = (conf - 0.20f) / 0.80f; t * t * (3f - 2f * t) }
+      conf = if (conf < 0.18f) 0f
+             else { val t = (conf - 0.18f) / 0.82f; t * t * (3f - 2f * t) }
 
       val alpha = (conf * 255f).toInt().coerceIn(0, 255)
       if (alpha == 0) { pixels[i] = 0; continue }
@@ -1336,17 +1785,23 @@ private class LipRendererPlatformView(
       val srcX = (px * srcW / procW).coerceIn(0, srcW - 1)
       val srcY = (py * srcH / procH).coerceIn(0, srcH - 1)
 
-      val srcPixel = srcBmp?.getPixel(srcX, srcY) ?: currentShadeColor
+      val srcPixel = srcBmp?.getPixel(srcX, srcY) ?: hairShadeColor
       val srcR = Color.red(srcPixel)   / 255f
       val srcG = Color.green(srcPixel) / 255f
       val srcB = Color.blue(srcPixel)  / 255f
 
-      val (_, _, srcL) = rgbToHSL(srcR, srcG, srcB)
+      val (_, srcS, srcL) = rgbToHSL(srcR, srcG, srcB)
 
-      // Luminance floor: dark hair lifted to ≥75% of target brightness
-      val resultL = max(srcL, tgtL * 0.75f)
+      // Match iOS processHairMask (plain hair): keep some natural saturation so dye
+      // does not look like flat poster colour on dark hair.
+      val accentBoost = 0.25f
+      val effS = ((srcS * (1f - accentBoost)) + (tgtS * accentBoost)).coerceIn(0f, 1f)
 
-      val (outR, outG, outB) = hslToRGB(tgtH, tgtS, resultL)
+      // Luminance floor (bleach-ish lift on dark fibres) + slight crown brightening (v).
+      var resultL = max(srcL, tgtL * 0.75f)
+      resultL = min(1f, resultL + v * 0.04f)
+
+      val (outR, outG, outB) = hslToRGB(tgtH, effS, resultL)
 
       val aN  = alpha / 255f
       val pR  = (outR * aN * 255f).toInt().coerceIn(0, 255)
@@ -1367,11 +1822,15 @@ private class LipRendererPlatformView(
   }
 
   /// Style Match: MediaPipe hair mask + accent tint with per-shape grading (constrained to hair pixels).
-  private fun buildHairStyleEffectBitmap(result: ImageSegmenterResult): Bitmap? {
+  private fun buildHairStyleEffectBitmap(
+    result: ImageSegmenterResult,
+    sourceBmp: Bitmap? = null,
+    hairShadeColor: Int = currentShadeColor,
+  ): Bitmap? {
     val masks = result.confidenceMasks().orElse(null) ?: return null
     if (masks.isEmpty()) return null
 
-    val hairMaskImg = if (masks.size > 1) masks[1] else masks[0]
+    val hairMaskImg = selectHairConfidenceMask(masks)
     val maskW = hairMaskImg.width
     val maskH = hairMaskImg.height
     if (maskW <= 0 || maskH <= 0) return null
@@ -1382,15 +1841,15 @@ private class LipRendererPlatformView(
     val floatData = FloatArray(floatBuffer.capacity())
     floatBuffer.get(floatData)
 
-    val tRf = Color.red(currentShadeColor) / 255f
-    val tGf = Color.green(currentShadeColor) / 255f
-    val tBf = Color.blue(currentShadeColor) / 255f
+    val tRf = Color.red(hairShadeColor) / 255f
+    val tGf = Color.green(hairShadeColor) / 255f
+    val tBf = Color.blue(hairShadeColor) / 255f
     val (tgtH0, tgtS0, tgtL0) = rgbToHSL(tRf, tGf, tBf)
     var tgtH = tgtH0
     var tgtS = tgtS0
     var tgtL = tgtL0
 
-    val srcBmp = rgbaBitmap
+    val srcBmp = sourceBmp ?: rgbaBitmap
     val srcW = srcBmp?.width ?: 1
     val srcH = srcBmp?.height ?: 1
 
@@ -1436,7 +1895,7 @@ private class LipRendererPlatformView(
       val srcX = (px * srcW / procW).coerceIn(0, srcW - 1)
       val srcY = (py * srcH / procH).coerceIn(0, srcH - 1)
 
-      val srcPixel = srcBmp?.getPixel(srcX, srcY) ?: currentShadeColor
+      val srcPixel = srcBmp?.getPixel(srcX, srcY) ?: hairShadeColor
       val srcR = Color.red(srcPixel) / 255f
       val srcG = Color.green(srcPixel) / 255f
       val srcB = Color.blue(srcPixel) / 255f
@@ -1528,8 +1987,8 @@ private class LipRendererPlatformView(
   }
 
   private fun lipPixelPaths(landmarks: List<NormalizedLandmark>, w: Int, h: Int): Pair<Path, Path> {
-    val outerLipIdx = intArrayOf(61, 146, 91, 181, 84, 17, 314, 405, 321, 375, 291, 308, 324, 318, 402, 317, 14, 87, 178, 88)
-    val innerLipIdx = intArrayOf(78, 95, 88, 178, 87, 14, 317, 402, 318, 324)
+    val outerLipIdx = MP_LIP_OUTER_IOS
+    val innerLipIdx = MP_LIP_INNER_IOS
     val outer = Path()
     outerLipIdx.forEachIndexed { i, idx ->
       val lm = landmarks[idx]
@@ -1576,7 +2035,8 @@ private class LipRendererPlatformView(
 
   private fun drawLipstickPhotoLayer(canvas: Canvas, landmarks: List<NormalizedLandmark>, color: Int, intensity: Float, w: Int, h: Int) {
     val (outer, inner) = lipPixelPaths(landmarks, w, h)
-    val alpha = (255 * 0.6f * intensity.coerceIn(0f, 1f)).toInt().coerceIn(18, 245)
+    // iOS: `shade.withAlphaComponent(intensity)` for default lipstick.
+    val alpha = (255 * intensity.coerceIn(0f, 1f)).toInt().coerceIn(0, 255)
     val p = Paint(Paint.ANTI_ALIAS_FLAG).apply {
       style = Paint.Style.FILL
       this.color = Color.argb(alpha, Color.red(color), Color.green(color), Color.blue(color))
@@ -1594,7 +2054,9 @@ private class LipRendererPlatformView(
     val rightEyeIdx = intArrayOf(362, 382, 381, 380, 374, 373, 390, 249, 263, 466, 388, 387, 386, 385, 384, 398)
     val leftEye = eyePixelPath(landmarks, leftEyeIdx, w, h)
     val rightEye = eyePixelPath(landmarks, rightEyeIdx, w, h)
-    val alpha = (255 * 0.3f * intensity.coerceIn(0f, 1f)).toInt().coerceIn(12, 200)
+    // iOS foundation: `max(0.20, min(0.65, intensity * 0.7))`
+    val a = min(0.65f, max(0.20f, intensity.coerceIn(0f, 1f) * 0.7f))
+    val alpha = (255 * a).toInt().coerceIn(51, 166)
     val p = Paint(Paint.ANTI_ALIAS_FLAG).apply {
       style = Paint.Style.FILL
       this.color = Color.argb(alpha, Color.red(color), Color.green(color), Color.blue(color))
@@ -1607,10 +2069,42 @@ private class LipRendererPlatformView(
     p.xfermode = null
   }
 
-  private fun drawPhotoCategory(canvas: Canvas, landmarks: List<NormalizedLandmark>, category: String, shade: Int, intensity: Float, w: Int, h: Int) {
+  private fun drawPhotoCategory(
+    canvas: Canvas,
+    landmarks: List<NormalizedLandmark>,
+    category: String,
+    shade: Int,
+    intensity: Float,
+    w: Int,
+    h: Int,
+    photoArgb: Bitmap,
+  ) {
     val c = category.lowercase()
     when {
-      c == "cmd_haircolor" || c == "cmd_hairstyle" -> { /* hair is live-camera only */ }
+      c == "cmd_haircolor" || c == "cmd_hairstyle" -> {
+        if (!ensureHairSegmenter()) return
+        val segBmp = downscalePhotoBitmap(photoArgb, 1024)
+        try {
+          val mpImg = BitmapImageBuilder(segBmp).build()
+          val segResult = try {
+            hairSegmenter!!.segment(mpImg)
+          } catch (t: Throwable) {
+            Log.e("HairSegmenter", "Photo segment", t)
+            return
+          }
+          val colored = if (c == "cmd_hairstyle") {
+            buildHairStyleEffectBitmap(segResult, segBmp, shade)
+          } else {
+            buildHairColorBitmap(segResult, segBmp, shade)
+          } ?: return
+          val p = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG).apply {
+            alpha = (255 * intensity.coerceIn(0f, 1f)).toInt().coerceIn(0, 255)
+          }
+          canvas.drawBitmap(colored, null, Rect(0, 0, w, h), p)
+        } finally {
+          if (segBmp !== photoArgb) segBmp.recycle()
+        }
+      }
       isFoundationCategory(c) -> drawFoundationPhotoLayer(canvas, landmarks, shade, intensity, w, h)
       else -> drawLipstickPhotoLayer(canvas, landmarks, shade, intensity, w, h)
     }
@@ -1641,10 +2135,10 @@ private class LipRendererPlatformView(
 
     if (useLayeredLook && lookLayers.isNotEmpty()) {
       for (layer in lookLayers) {
-        drawPhotoCategory(canvas, landmarks, layer.third, layer.first, layer.second, w, h)
+        drawPhotoCategory(canvas, landmarks, layer.third, layer.first, layer.second, w, h, out)
       }
     } else {
-      drawPhotoCategory(canvas, landmarks, currentCategory, currentShadeColor, currentIntensity, w, h)
+      drawPhotoCategory(canvas, landmarks, currentCategory, currentShadeColor, currentIntensity, w, h, out)
     }
 
     if (isCompareMode) canvas.restore()
@@ -1662,7 +2156,7 @@ private class LipRendererPlatformView(
         .build()
       val options = FaceLandmarker.FaceLandmarkerOptions.builder()
         .setBaseOptions(baseOptions)
-        .setRunningMode(RunningMode.IMAGE)
+        .setRunningMode(RunningMode.VIDEO)
         .setNumFaces(1)
         .build()
       faceLandmarker = FaceLandmarker.createFromOptions(appContext, options)
@@ -1702,16 +2196,23 @@ private class LipMaskGLSurfaceView(context: Context) : GLSurfaceView(context) {
   fun setLook(layers: List<Triple<Int, Float, String>>, comp: Boolean) =
     queueEvent { renderer.setLook(layers, comp) }
   fun setShowLandmarks(s: Boolean) = queueEvent { renderer.showLandmarks = s }
-  fun setCalibration(split: Float) = queueEvent { renderer.splitPosition = split }
-  fun setLandmarks(o: List<PointF>, i: List<PointF>, f: List<PointF>, le: List<PointF>, re: List<PointF>, iw: Int, ih: Int, r: Int) =
-    queueEvent { renderer.updateGeometry(o, i, f, le, re, iw.toFloat(), ih.toFloat(), width.toFloat(), height.toFloat(), r) }
+  fun setCalibration(split: Float, compare: Boolean) = queueEvent {
+    renderer.splitPosition = split
+    renderer.isCompareMode = compare
+  }
+  /** [vw]/[vh] must match the space used in [mapNormListToPreview] (typically [PreviewView] size). */
+  fun setLandmarks(o: List<PointF>, i: List<PointF>, f: List<PointF>, le: List<PointF>, re: List<PointF>, vw: Float, vh: Float) =
+    queueEvent { renderer.updateGeometryViewPixels(o, i, f, le, re, vw, vh) }
   fun hideAllOverlays() = queueEvent { renderer.hideAll = true }
+  fun showOverlays() = queueEvent { renderer.hideAll = false }
 }
 
 private class LipMaskRenderer : GLSurfaceView.Renderer {
   private var program = 0
   private var colorHandle = 0
   private var posHandle = 0
+  private var clipCompareHandle = -1
+  private var splitMinXHandle = -1
 
   private var outerLipBuf: java.nio.FloatBuffer? = null
   private var innerLipBuf: java.nio.FloatBuffer? = null
@@ -1728,12 +2229,32 @@ private class LipMaskRenderer : GLSurfaceView.Renderer {
   @Volatile var showLandmarks = false
   @Volatile var splitPosition = 0.5f
   @Volatile var hideAll = false
+  private var viewportWidth = 0
+  private var viewportHeight = 0
   @Volatile private var color = floatArrayOf(1f, 0f, 0f, 0.5f)
   @Volatile private var category = "cmd_lipstick"
-  @Volatile private var isCompareMode = false
+  @Volatile var isCompareMode = false
   /// When true, [onDrawFrame] uses [effectLayers] instead of single [category] (may be empty = clear).
   @Volatile private var layeredLookEnabled = false
   @Volatile private var effectLayers: List<Triple<Int, Float, String>> = emptyList()
+
+  /** Fragment alpha aligned with iOS `NativeLipRendererPlugin` per-category fills. */
+  private fun resolveFillAlpha(category: String, intensity: Float): Float {
+    val i = intensity.coerceIn(0f, 1f)
+    val ct = category.lowercase()
+    if (ct == "cmd_face" || ct.contains("foundation") || ct.contains("concealer"))
+      return min(0.65f, max(0.20f, i * 0.7f))
+    if (ct == "cmd_blush") {
+      val t = i.toDouble().pow(0.52).toFloat()
+      return max(0.08f, 0.30f * t)
+    }
+    if (ct == "cmd_highlight" || ct == "cmd_highlighter")
+      return max(0.05f, min(0.34f, 0.13f * i))
+    if (ct == "cmd_eyeshadow" || ct == "cmd_shadow")
+      return max(0.14f, min(0.34f, i * 0.24f))
+    // Default lipstick / liner / brow etc.: iOS uses `withAlphaComponent(intensity)`.
+    return i
+  }
 
   override fun onSurfaceCreated(gl: GL10?, config: EGLConfig?) {
     GLES20.glEnable(GLES20.GL_BLEND)
@@ -1745,9 +2266,28 @@ private class LipMaskRenderer : GLSurfaceView.Renderer {
     }
     posHandle = GLES20.glGetAttribLocation(program, "aPos")
     colorHandle = GLES20.glGetUniformLocation(program, "uColor")
+    clipCompareHandle = GLES20.glGetUniformLocation(program, "uClipCompare")
+    splitMinXHandle = GLES20.glGetUniformLocation(program, "uSplitMinX")
   }
 
-  override fun onSurfaceChanged(gl: GL10?, w: Int, h: Int) = GLES20.glViewport(0, 0, w, h)
+  /** Compare mask in **fragment** space (matches iOS right-half “after”); avoids flaky `glScissor` on translucent surfaces. */
+  private fun applyCompareClipUniforms() {
+    if (clipCompareHandle < 0 || splitMinXHandle < 0) return
+    val vw = viewportWidth
+    if (isCompareMode && vw > 0) {
+      GLES20.glUniform1f(clipCompareHandle, 1f)
+      GLES20.glUniform1f(splitMinXHandle, splitPosition.coerceIn(0f, 1f) * vw)
+    } else {
+      GLES20.glUniform1f(clipCompareHandle, 0f)
+      GLES20.glUniform1f(splitMinXHandle, 0f)
+    }
+  }
+
+  override fun onSurfaceChanged(gl: GL10?, w: Int, h: Int) {
+    GLES20.glViewport(0, 0, w, h)
+    viewportWidth = w
+    viewportHeight = h
+  }
 
   override fun onDrawFrame(gl: GL10?) {
     GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT or GLES20.GL_STENCIL_BUFFER_BIT)
@@ -1756,6 +2296,7 @@ private class LipMaskRenderer : GLSurfaceView.Renderer {
     if (hideAll) return
 
     GLES20.glUseProgram(program)
+    applyCompareClipUniforms()
 
     if (layeredLookEnabled) {
       if (effectLayers.isEmpty()) return
@@ -1768,7 +2309,7 @@ private class LipMaskRenderer : GLSurfaceView.Renderer {
         color[0] = Color.red(s) / 255f
         color[1] = Color.green(s) / 255f
         color[2] = Color.blue(s) / 255f
-        color[3] = (if (cat.contains("face", ignoreCase = true)) 0.3f else 0.6f) * i.coerceIn(0f, 1f)
+        color[3] = resolveFillAlpha(cat, i)
         val ct = cat.lowercase()
         val isFoundation = ct == "cmd_face" || ct == "cmd_foundation" || ct == "cmd_concealer" ||
           ct.contains("foundation")
@@ -1857,28 +2398,41 @@ private class LipMaskRenderer : GLSurfaceView.Renderer {
   }
 
   fun setLook(layers: List<Triple<Int, Float, String>>, comp: Boolean) {
-    layeredLookEnabled = true
-    effectLayers = layers
     isCompareMode = comp
     hideAll = false
+    if (layers.isEmpty()) {
+      layeredLookEnabled = false
+      effectLayers = emptyList()
+      return
+    }
+    layeredLookEnabled = true
+    effectLayers = layers
   }
 
   fun updateEffect(s: Int, i: Float, cat: String, comp: Boolean) {
     layeredLookEnabled = false
     effectLayers = emptyList()
     color[0] = Color.red(s) / 255f; color[1] = Color.green(s) / 255f; color[2] = Color.blue(s) / 255f
-    color[3] = (if (cat.contains("face")) 0.3f else 0.6f) * i.coerceIn(0f, 1f)
+    color[3] = resolveFillAlpha(cat, i)
     category = cat
     isCompareMode = comp
-    hideAll = (cat == "cmd_haircolor" || cat == "cmd_hairstyle")
+    val c = cat.trim().lowercase()
+    val vectorMakeup = when (c) {
+      "cmd_blush", "cmd_highlight", "cmd_eyeshadow", "cmd_eye", "cmd_mascara",
+      "cmd_eyebrow", "cmd_eyeliner", "cmd_lipliner" -> true
+      else -> false
+    }
+    val foundationCanvas = c == "cmd_face" || c == "cmd_foundation" || c == "cmd_concealer" ||
+      c.contains("foundation")
+    hideAll = (cat == "cmd_haircolor" || cat == "cmd_hairstyle" || vectorMakeup || foundationCanvas)
   }
 
-  fun updateGeometry(o: List<PointF>, i: List<PointF>, f: List<PointF>, le: List<PointF>, re: List<PointF>, iw: Float, ih: Float, vw: Float, vh: Float, r: Int) {
-    outerLipBuf = build(o, iw, ih, vw, vh, r); outerLipCount = o.size
-    innerLipBuf = build(i, iw, ih, vw, vh, r); innerLipCount = i.size
-    faceOvalBuf = build(f, iw, ih, vw, vh, r); faceOvalCount = f.size
-    leftEyeBuf  = build(le, iw, ih, vw, vh, r); leftEyeCount  = le.size
-    rightEyeBuf = build(re, iw, ih, vw, vh, r); rightEyeCount = re.size
+  fun updateGeometryViewPixels(o: List<PointF>, i: List<PointF>, f: List<PointF>, le: List<PointF>, re: List<PointF>, vw: Float, vh: Float) {
+    outerLipBuf = buildFromViewPixels(o, vw, vh); outerLipCount = o.size
+    innerLipBuf = buildFromViewPixels(i, vw, vh); innerLipCount = i.size
+    faceOvalBuf = buildFromViewPixels(f, vw, vh); faceOvalCount = f.size
+    leftEyeBuf  = buildFromViewPixels(le, vw, vh); leftEyeCount  = le.size
+    rightEyeBuf = buildFromViewPixels(re, vw, vh); rightEyeCount = re.size
   }
 
   private fun draw(b: java.nio.FloatBuffer, c: Int) {
@@ -1887,38 +2441,16 @@ private class LipMaskRenderer : GLSurfaceView.Renderer {
     GLES20.glDrawArrays(GLES20.GL_TRIANGLE_FAN, 0, c)
   }
 
-  private fun build(pts: List<PointF>, iw: Float, ih: Float, vw: Float, vh: Float, r: Int): java.nio.FloatBuffer {
-    val rot = (r + 360) % 360
-    val (rw, rh) = if (rot % 180 == 0) iw to ih else ih to iw
-    val iAsp = rw / rh
-    val vAsp = vw / vh
-
-    val sc: Float; val dx: Float; val dy: Float
-    if (vAsp > iAsp) { sc = vw / rw; dx = 0f; dy = (vh - rh * sc) / 2f }
-    else { sc = vh / rh; dy = 0f; dx = (vw - rw * sc) / 2f }
-
+  /** NDC from view pixels; rotation/mirror/cover already applied in [mapNormToViewCover]. */
+  private fun buildFromViewPixels(pts: List<PointF>, vw: Float, vh: Float): java.nio.FloatBuffer {
+    val vws = vw.coerceAtLeast(1f)
+    val vhs = vh.coerceAtLeast(1f)
     val arr = FloatArray(pts.size * 2)
     for (idx in pts.indices) {
-      val p = pts[idx]
-      val (tx, ty) = when (rot) {
-        90 -> 1f - p.y to p.x
-        180 -> 1f - p.x to 1f - p.y
-        270 -> p.y to 1f - p.x
-        else -> p.x to p.y
-      }
-      val fx = 1f - tx
-      val px = dx + fx * rw * sc
-      val py = dy + ty * rh * sc
-
-      if (isCompareMode) {
-        val screenXNormalized = px / vw
-        if (screenXNormalized < splitPosition) {
-          arr[idx * 2] = -2f; arr[idx * 2 + 1] = -2f; continue
-        }
-      }
-
-      arr[idx * 2]     = (px / vw) * 2f - 1f
-      arr[idx * 2 + 1] = 1f - (py / vh) * 2f
+      val px = pts[idx].x
+      val py = pts[idx].y
+      arr[idx * 2] = (px / vws) * 2f - 1f
+      arr[idx * 2 + 1] = 1f - (py / vhs) * 2f
     }
     return ByteBuffer.allocateDirect(arr.size * 4).order(java.nio.ByteOrder.nativeOrder()).asFloatBuffer().apply { put(arr); position(0) }
   }
@@ -1928,7 +2460,10 @@ private class LipMaskRenderer : GLSurfaceView.Renderer {
     private const val FRAG = """
       precision mediump float;
       uniform vec4 uColor;
+      uniform float uClipCompare;
+      uniform float uSplitMinX;
       void main() {
+        if (uClipCompare > 0.5 && gl_FragCoord.x < uSplitMinX) discard;
         gl_FragColor = uColor;
       }
     """

@@ -803,26 +803,72 @@ class _MakeupDropdownFilters extends StatelessWidget {
   }
 }
 
-/// Removes duplicate document ids, then rows that share the same display
-/// name and brand (e.g. legacy double-seeded SKUs) so search stays one row per product.
+/// Removes:
+/// 1) duplicate document ids
+/// 2) same normalized name + brand (legacy double-seeded SKUs)
+/// 3) rows that reuse the same hero image with a different brand/title (common re-seed dupes)
 List<Product> _dedupeSearchCatalog(List<Product> raw) {
   String norm(String s) =>
       s.toLowerCase().trim().replaceAll(RegExp(r'\s+'), ' ');
+
+  /// Stable key for the visual used in lists (storage path or URL without query).
+  String mediaKey(Product p) {
+    final path = p.imagePath.trim();
+    if (path.isNotEmpty) return 'p:${path.toLowerCase()}';
+    final u = p.imageUrl.trim();
+    if (u.isEmpty) return '';
+    try {
+      final uri = Uri.parse(u);
+      if (uri.hasScheme && uri.host.isNotEmpty) {
+        return 'u:${uri.scheme}://${uri.host}${uri.path}'.toLowerCase();
+      }
+    } catch (_) {}
+    return 'u:${u.toLowerCase()}';
+  }
+
+  Product preferCatalogWinner(Product a, Product b) {
+    bool vogue(Product x) {
+      final t = x.brand.toLowerCase();
+      return t.contains('vogue') || t.contains('la vogue');
+    }
+    if (vogue(a) && !vogue(b)) return a;
+    if (vogue(b) && !vogue(a)) return b;
+    return a.id.compareTo(b.id) <= 0 ? a : b;
+  }
+
   final byId = <String, Product>{};
   for (final p in raw) {
     byId.putIfAbsent(p.id, () => p);
   }
+
   final byNameBrand = <String, Product>{};
   for (final p in byId.values) {
     final key = '${norm(p.name)}|${norm(p.brand)}';
     final existing = byNameBrand[key];
     if (existing == null) {
       byNameBrand[key] = p;
-    } else if (p.id.compareTo(existing.id) < 0) {
-      byNameBrand[key] = p;
+    } else {
+      byNameBrand[key] = preferCatalogWinner(existing, p);
     }
   }
-  return byNameBrand.values.toList();
+
+  final list = byNameBrand.values.toList();
+  final byMedia = <String, Product>{};
+  for (final p in list) {
+    final mk = mediaKey(p);
+    if (mk.isEmpty) {
+      byMedia['__noimg_${p.id}'] = p;
+      continue;
+    }
+    final existing = byMedia[mk];
+    if (existing == null) {
+      byMedia[mk] = p;
+    } else {
+      byMedia[mk] = preferCatalogWinner(existing, p);
+    }
+  }
+
+  return byMedia.values.toList();
 }
 
 class _ProductSearchDelegate extends SearchDelegate<Product?> {
@@ -1671,7 +1717,9 @@ class _HeroCard extends StatelessWidget {
                       builder: (_) => LiveTryOnScreen(
                         productId: item.id,
                         productName: item.name,
-                        productImage: item.imagePath,
+                        productImage: item.imagePath.isNotEmpty
+                            ? item.imagePath
+                            : item.imageUrl,
                         productCategory: item.category,
                         shades: item.shades,
                       ),
@@ -1679,7 +1727,9 @@ class _HeroCard extends StatelessWidget {
                         arguments: {
                           'productId': item.id,
                           'productName': item.name,
-                          'productImage': item.imagePath,
+                          'productImage': item.imagePath.isNotEmpty
+                              ? item.imagePath
+                              : item.imageUrl,
                           'productCategory': item.category,
                           'shades': item.shades,
                         },

@@ -470,7 +470,10 @@ class _FullMakeupTryOnScreenState extends State<FullMakeupTryOnScreen> {
       final x = w * _splitPos.clamp(0.0, 1.0);
       void move(double dx) {
         setState(() => _splitPos = (_splitPos + dx / w).clamp(0.05, 0.95));
-        _nativeCtrl?.setCalibration(splitPosition: _splitPos);
+        _nativeCtrl?.setCalibration(
+          splitPosition: _splitPos,
+          isCompareMode: _compareMode,
+        );
       }
       return Stack(children: [
         Positioned(left: x - 0.5, top: 0, bottom: 0,

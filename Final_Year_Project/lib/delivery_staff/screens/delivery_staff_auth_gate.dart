@@ -10,51 +10,65 @@ class DeliveryStaffAuthGate extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final user = FirebaseAuth.instance.currentUser;
-    if (user == null) return const DeliveryStaffLoginScreen();
-
-    return StreamBuilder(
-      stream: DeliveryStaffService.instance.currentProfileStream(),
-      builder: (context, snap) {
-        if (snap.hasError) {
-          return _blockedScaffold(
-            context,
-            message:
-                'Could not verify delivery profile.\n${snap.error}\n\nPlease contact admin.',
-          );
-        }
-        if (!snap.hasData) {
+    return StreamBuilder<User?>(
+      stream: FirebaseAuth.instance.authStateChanges(),
+      builder: (context, authSnap) {
+        if (authSnap.connectionState == ConnectionState.waiting) {
           return const Scaffold(
             body: Center(child: CircularProgressIndicator()),
           );
         }
-        final doc = snap.data;
-        if (doc == null || !doc.exists) {
-          return _blockedScaffold(
-            context,
-            message:
-                'No profile found. Contact admin to create delivery-staff account.',
-          );
+        final user = authSnap.data;
+        if (user == null) {
+          return const DeliveryStaffLoginScreen();
         }
-        final data = doc.data() ?? const <String, dynamic>{};
-        final role = (data['role'] ?? '').toString().toLowerCase();
-        final disabled =
-            data['disabled'] == true ||
-            data['isDisabled'] == true ||
-            data['isActive'] == false;
-        if (role != 'delivery_staff') {
-          return _blockedScaffold(
-            context,
-            message: 'This account is not assigned as delivery staff.',
-          );
-        }
-        if (disabled) {
-          return _blockedScaffold(
-            context,
-            message: 'Your delivery account is disabled. Contact admin.',
-          );
-        }
-        return const DeliveryStaffHomeScreen();
+
+        return StreamBuilder(
+          stream: DeliveryStaffService.instance.currentProfileStream(
+            forUid: user.uid,
+          ),
+          builder: (context, snap) {
+            if (snap.hasError) {
+              return _blockedScaffold(
+                context,
+                message:
+                    'Could not verify delivery profile.\n${snap.error}\n\nPlease contact admin.',
+              );
+            }
+            if (!snap.hasData) {
+              return const Scaffold(
+                body: Center(child: CircularProgressIndicator()),
+              );
+            }
+            final doc = snap.data;
+            if (doc == null || !doc.exists) {
+              return _blockedScaffold(
+                context,
+                message:
+                    'No profile found. Contact admin to create delivery-staff account.',
+              );
+            }
+            final data = doc.data() ?? const <String, dynamic>{};
+            final role = (data['role'] ?? '').toString().toLowerCase();
+            final disabled =
+                data['disabled'] == true ||
+                data['isDisabled'] == true ||
+                data['isActive'] == false;
+            if (role != 'delivery_staff') {
+              return _blockedScaffold(
+                context,
+                message: 'This account is not assigned as delivery staff.',
+              );
+            }
+            if (disabled) {
+              return _blockedScaffold(
+                context,
+                message: 'Your delivery account is disabled. Contact admin.',
+              );
+            }
+            return const DeliveryStaffHomeScreen();
+          },
+        );
       },
     );
   }

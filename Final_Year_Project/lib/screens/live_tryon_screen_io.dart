@@ -200,6 +200,9 @@ class _LiveTryOnScreenState extends State<LiveTryOnScreen> {
       _remoteShades = shades;
       _alignSelectedShadeIndexToProvidedColor();
     });
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _applyNativeEffect();
+    });
   }
 
   Future<void> _loadActiveProduct({String? productId}) async {
@@ -258,13 +261,19 @@ class _LiveTryOnScreenState extends State<LiveTryOnScreen> {
 
   void _handleNativeEvent(NativeLipRendererEvent event) {
     if (!mounted) return;
+    if (event.type == 'ready') {
+      setState(() {
+        _nativeReady = true;
+        _nativeError = null;
+      });
+      debugPrint('✅ Native renderer READY');
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _applyNativeEffect();
+      });
+      return;
+    }
     setState(() {
       switch (event.type) {
-        case 'ready':
-          _nativeReady = true;
-          _nativeError = null;
-          debugPrint('✅ Native renderer READY');
-          break;
         case 'fps':
           _nativeFps = event.fps ?? 0;
           debugPrint('📊 Native FPS: ${_nativeFps.toStringAsFixed(1)}');
@@ -283,7 +292,9 @@ class _LiveTryOnScreenState extends State<LiveTryOnScreen> {
   Future<void> _applyNativeEffect() async {
     final controller = _nativeController;
     if (controller == null) {
-      debugPrint('⚠️ Native controller is NULL - cannot apply effect');
+      if (kDebugMode && _shouldUseNativeRenderer) {
+        debugPrint('Native try-on: effect deferred (platform view not ready yet)');
+      }
       return;
     }
     
@@ -691,7 +702,10 @@ class _LiveTryOnScreenState extends State<LiveTryOnScreen> {
         void moveByDelta(double dx) {
           final next = (_splitPosition + (dx / width)).clamp(0.05, 0.95);
           setState(() => _splitPosition = next);
-          _nativeController?.setCalibration(splitPosition: _splitPosition);
+          _nativeController?.setCalibration(
+            splitPosition: _splitPosition,
+            isCompareMode: _isCompareMode,
+          );
         }
 
         return Stack(
@@ -776,7 +790,9 @@ class _LiveTryOnScreenState extends State<LiveTryOnScreen> {
 
   Widget _buildProductPopupCard() {
     final name = widget.productName ?? _activeProduct?.name ?? 'Product';
-    final imagePath = widget.productImage ?? _activeProduct?.imagePath ?? '';
+    final path = widget.productImage ?? _activeProduct?.imagePath ?? '';
+    final fallbackUrl = _activeProduct?.imageUrl ?? '';
+    final imageRef = path.isNotEmpty ? path : fallbackUrl;
     return Container(
       margin: const EdgeInsets.symmetric(horizontal: 12),
       padding: const EdgeInsets.fromLTRB(10, 10, 10, 10),
@@ -798,12 +814,14 @@ class _LiveTryOnScreenState extends State<LiveTryOnScreen> {
             child: SizedBox(
               width: 44,
               height: 44,
-              child: imagePath.startsWith('assets/')
-                  ? FirebaseStorageImage(
-                      storagePath: imagePath,
-                      fit: BoxFit.contain,
-                    )
-                  : const Icon(Icons.inventory_2_outlined, color: Colors.black45),
+            child: imageRef.isEmpty
+                ? const Icon(Icons.inventory_2_outlined, color: Colors.black45)
+                : FirebaseStorageImage(
+                    storagePath: imageRef,
+                    width: 44,
+                    height: 44,
+                    fit: BoxFit.cover,
+                  ),
             ),
           ),
           const SizedBox(width: 10),
@@ -958,7 +976,7 @@ class _LiveTryOnScreenState extends State<LiveTryOnScreen> {
         Positioned(
           left: 0,
           right: 0,
-          bottom: 172,
+          bottom: 232,
           child: _buildProductPopupCard(),
         ),
         Positioned(
@@ -974,9 +992,12 @@ class _LiveTryOnScreenState extends State<LiveTryOnScreen> {
             splitPosition: _splitPosition,
             onSplitChange: (val) => setState(() {
               _splitPosition = val;
-              _nativeController?.setCalibration(splitPosition: val);
+              _nativeController?.setCalibration(
+                splitPosition: val,
+                isCompareMode: _isCompareMode,
+              );
             }),
-            height: 180,
+            height: 240,
             productImage: widget.productImage,
             shades: _effectiveShades,
             selectedIndex: _selectedShadeIndex,
@@ -1133,7 +1154,7 @@ class _LiveTryOnScreenState extends State<LiveTryOnScreen> {
                         Positioned(
                           left: 0,
                           right: 0,
-                          bottom: 172,
+                          bottom: 232,
                           child: _buildProductPopupCard(),
                         ),
 
@@ -1147,7 +1168,7 @@ class _LiveTryOnScreenState extends State<LiveTryOnScreen> {
                             onModeChange: (val) => setState(() => _isCompareMode = val),
                             splitPosition: _splitPosition,
                             onSplitChange: (val) => setState(() => _splitPosition = val),
-                            height: 180,
+                            height: 240,
                             productImage: widget.productImage,
                             shades: _effectiveShades,
                             selectedIndex: _selectedShadeIndex,

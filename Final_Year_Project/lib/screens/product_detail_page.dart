@@ -331,7 +331,8 @@ class _ProductDetailPageState extends State<ProductDetailPage> {
         builder: (_) => LiveTryOnScreen(
           productId: p.id,
           productName: p.name,
-          productImage: p.imagePath,
+          productImage:
+              p.imagePath.isNotEmpty ? p.imagePath : p.imageUrl,
           productCategory: p.category,
           productColor: _hexColor(_selectedHex),
           shadeName: _selectedShadeName,
@@ -341,7 +342,8 @@ class _ProductDetailPageState extends State<ProductDetailPage> {
           arguments: {
             'productId': p.id,
             'productName': p.name,
-            'productImage': p.imagePath,
+            'productImage':
+                p.imagePath.isNotEmpty ? p.imagePath : p.imageUrl,
             'productCategory': p.category,
             'subCategory': p.subCategory,   // <-- passed for face product routing
             'productColor': _hexColor(_selectedHex),

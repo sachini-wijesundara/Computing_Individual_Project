@@ -67,7 +67,7 @@ class GeminiChatService {
       apiKey: _apiKey,
       systemInstruction: Content.system(systemPrompt),
       generationConfig: GenerationConfig(
-        temperature: 0.55,
+        temperature: 0.35,
         maxOutputTokens: 650,
       ),
     );

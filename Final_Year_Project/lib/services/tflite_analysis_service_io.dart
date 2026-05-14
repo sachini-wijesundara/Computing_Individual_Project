@@ -511,7 +511,7 @@ Reply ONLY in valid JSON:
         'undertone':  undertone,
         'hair_color': hairColor,
         'hair_type':  hairType,
-        'confidence': 0.62 + math.Random().nextDouble() * 0.12,
+        'confidence': 0.72,
         'inference_mode': 'pixel_analysis',
       };
     } catch (e) {

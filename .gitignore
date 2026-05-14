@@ -1,3 +1,6 @@
+# Local course report PDFs (folder name includes trailing space)
+reports /
+
 # Local secrets at repo root (some IDEs validate env here)
 .env
 !.env.example

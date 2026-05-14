@@ -88,11 +88,12 @@ class _AdminLoginScreenState extends State<AdminLoginScreen> {
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                Align(
+                Center(
                   child: Image.asset(
                     'assets/logo.png',
                     height: 58,
                     fit: BoxFit.contain,
+                    alignment: Alignment.center,
                   ),
                 ),
                 const SizedBox(height: 14),

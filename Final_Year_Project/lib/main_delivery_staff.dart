@@ -1,4 +1,3 @@
-import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
 import 'delivery_staff/screens/delivery_staff_auth_gate.dart';
@@ -28,17 +27,7 @@ class DeliveryStaffApp extends StatelessWidget {
         ),
         useMaterial3: true,
       ),
-      home: StreamBuilder<User?>(
-        stream: FirebaseAuth.instance.authStateChanges(),
-        builder: (context, snap) {
-          if (snap.connectionState == ConnectionState.waiting) {
-            return const Scaffold(
-              body: Center(child: CircularProgressIndicator()),
-            );
-          }
-          return const DeliveryStaffAuthGate();
-        },
-      ),
+      home: const DeliveryStaffAuthGate(),
     );
   }
 }

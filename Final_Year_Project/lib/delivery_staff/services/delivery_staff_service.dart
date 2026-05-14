@@ -17,9 +17,15 @@ class DeliveryStaffService {
   String get emailLower =>
       (_auth.currentUser?.email ?? '').trim().toLowerCase();
 
-  Stream<DocumentSnapshot<Map<String, dynamic>>> currentProfileStream() {
-    final id = uid;
-    if (id == null || id.isEmpty) return const Stream.empty();
+  /// If [forUid] is set, that document is watched (avoids relying on
+  /// [currentUser] lagging behind [authStateChanges] on web after sign-in).
+  Stream<DocumentSnapshot<Map<String, dynamic>>> currentProfileStream({
+    String? forUid,
+  }) {
+    final id = (forUid ?? uid)?.trim();
+    if (id == null || id.isEmpty) {
+      return const Stream<DocumentSnapshot<Map<String, dynamic>>>.empty();
+    }
     return _db.collection('users').doc(id).snapshots();
   }
 

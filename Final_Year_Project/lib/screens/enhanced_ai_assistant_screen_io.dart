@@ -1,11 +1,15 @@
 import 'dart:typed_data';
 
 import 'package:cross_file/cross_file.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
-import '../services/tflite_analysis_service.dart';
+import '../services/beauty_profile_service.dart';
 import '../services/gemini_chat_service.dart';
+import '../services/tflite_analysis_service.dart';
+import '../utils/beauty_profile_shades.dart';
 import '../models/hair_style.dart';
+import 'live_tryon_screen.dart';
 
 // ── Palette ───────────────────────────────────────────────────────────────────
 const _bg       = Color(0xFF111111);   // neutral dark (matches screenshot)
@@ -65,8 +69,38 @@ class _EnhancedAIAssistantScreenState
         hairType: hair.hairType, hairColor: hair.hairColor,
         inferenceMode: '${skin.inferenceMode}/${hair.inferenceMode}',
       ));
+      Map<String, dynamic>? mergedProfile;
+      if (FirebaseAuth.instance.currentUser != null) {
+        try {
+          mergedProfile = await BeautyProfileService.instance
+              .saveAfterAnalysis(skin: skin, hair: hair);
+        } catch (e, st) {
+          debugPrint('Beauty profile save: $e\n$st');
+        }
+        if (mergedProfile != null) {
+          _gemini.setBeautyProfile(BeautyProfile(
+            skinTone: mergedProfile['skinTone'] as String? ?? skin.skinTone,
+            undertone: mergedProfile['undertone'] as String? ?? skin.undertone,
+            hairType: mergedProfile['hairType'] as String? ?? hair.hairType,
+            hairColor: mergedProfile['hairColor'] as String? ?? hair.hairColor,
+            inferenceMode:
+                '${mergedProfile['skinInference'] ?? skin.inferenceMode}/'
+                '${mergedProfile['hairInference'] ?? hair.inferenceMode}',
+          ));
+        }
+      }
       if (!mounted) return;
       setState(() { _skin = skin; _hair = hair; _analyzing = false; });
+      if (!mounted) return;
+      if (FirebaseAuth.instance.currentUser != null && mergedProfile != null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Beauty profile saved — recommendations stay consistent across scans.'),
+            duration: Duration(seconds: 3),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
     } catch (e, st) {
       debugPrint('Enhanced AI analysis error: $e\n$st');
       if (!mounted) return;
@@ -283,6 +317,7 @@ class _EnhancedAIAssistantScreenState
   // SKIN result card
   Widget _skinCard() {
     final s = _skin!;
+    final lip = BeautyProfileShades.lipPrimaryForProfile(s.skinTone, s.undertone);
     return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
       // Avatar + heading
       _resultHeading(
@@ -290,6 +325,29 @@ class _EnhancedAIAssistantScreenState
         val1: s.skinTone, val2: s.undertone,
         lbl1: 'Skin Tone', lbl2: 'Undertone',
         mode: s.inferenceMode, confidence: s.confidence,
+      ),
+      const SizedBox(height: 16),
+      SizedBox(
+        width: double.infinity,
+        child: FilledButton.icon(
+          style: FilledButton.styleFrom(
+            backgroundColor: _red,
+            foregroundColor: Colors.white,
+            padding: const EdgeInsets.symmetric(vertical: 14),
+          ),
+          onPressed: () {
+            Navigator.of(context).push(
+              LiveTryOnScreen.route(
+                productName: 'Profile lip shade',
+                productCategory: 'cmd_lipstick',
+                productColor: lip,
+                shadeName: '${s.skinTone} · ${s.undertone} · ${BeautyProfileShades.lipShadeNameForProfile(s.skinTone, s.undertone)}',
+              ),
+            );
+          },
+          icon: const Icon(Icons.videocam_outlined, size: 20),
+          label: const Text('TRY RECOMMENDED LIP LIVE', style: TextStyle(fontWeight: FontWeight.w800)),
+        ),
       ),
       const SizedBox(height: 20),
       _sectionHeader('RECOMMENDED PRODUCTS'),
@@ -470,8 +528,11 @@ class _EnhancedAIAssistantScreenState
   }
 
   String _modeLabel(String m) {
+    if (m.contains('gemini')) return 'Gemini Vision';
+    if (m.contains('tflite')) return 'On-device TFLite';
     if (m.contains('server')) return 'Server Analysis';
-    return 'Pixel Analysis';
+    if (m.contains('pixel')) return 'Pixel Analysis';
+    return m;
   }
 
   // Section header

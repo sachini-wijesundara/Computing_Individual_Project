@@ -45,11 +45,22 @@ flutter {
     source = "../.."
 }
 
-dependencies {
-    // MediaPipe — FaceLandmarker, MPImage, RunningMode, ImageProcessingOptions etc.
-    implementation("com.google.mediapipe:tasks-vision:0.10.14") {
-        exclude(group = "com.google.ai.edge.litert")
+configurations.configureEach {
+    resolutionStrategy.dependencySubstitution {
+        // MediaPipe 0.10.14+ pulls LiteRT (`com.google.ai.edge.litert`), which re-exports the same
+        // `org.tensorflow.lite.*` types as classic `org.tensorflow:tensorflow-lite` → duplicate classes.
+        substitute(module("com.google.ai.edge.litert:litert"))
+            .using(module("org.tensorflow:tensorflow-lite:2.14.0"))
+            .because("Use single TFLite runtime with tflite_flutter + nail Interpreter")
+        substitute(module("com.google.ai.edge.litert:litert-api"))
+            .using(module("org.tensorflow:tensorflow-lite-api:2.14.0"))
+            .because("Use single TFLite API artifact; avoid LiteRT / TFLite duplicate classes")
     }
+}
+
+dependencies {
+    // MediaPipe — FaceLandmarker, ImageSegmenter, etc.
+    implementation("com.google.mediapipe:tasks-vision:0.10.14")
 
     // CameraX — ImageProxy, planes, ImageAnalysis, PreviewView, ProcessCameraProvider
     implementation("androidx.camera:camera-core:1.3.4")
@@ -60,7 +71,7 @@ dependencies {
     // Lifecycle
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.7.0")
 
-    // TensorFlow Lite — nail segmentation model inference
+    // TensorFlow Lite — nail segmentation (`Interpreter`); same version as substitution target above.
     implementation("org.tensorflow:tensorflow-lite:2.14.0")
     implementation("org.tensorflow:tensorflow-lite-support:0.4.4")
 }

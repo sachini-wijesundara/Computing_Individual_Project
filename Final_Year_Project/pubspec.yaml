@@ -47,6 +47,28 @@ dev_dependencies:
   flutter_test:
     sdk: flutter
   flutter_lints: ^5.0.0
+  flutter_launcher_icons: ^0.14.4
+  flutter_native_splash: ^2.4.7
+
+# Regenerate: dart run flutter_launcher_icons
+# Master for home-screen icons: tight crop + centered on 1024² (see assets/app_icon.png).
+flutter_launcher_icons:
+  image_path: assets/app_icon.png
+  ios: true
+  android: true
+  remove_alpha_ios: true
+
+# Regenerate: dart run flutter_native_splash:create
+flutter_native_splash:
+  color: "#FFF8F8"
+  image: assets/logo.png
+  android_12:
+    image: assets/logo.png
+    color: "#FFF8F8"
+  ios: true
+  android: true
+  web: false
+
 flutter:
   shaders:
   - assets/shaders/lipstick.frag

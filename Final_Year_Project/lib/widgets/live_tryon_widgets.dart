@@ -175,51 +175,43 @@ class BottomTray extends StatelessWidget {
 
           const SizedBox(height: 16),
 
-          // ── Content Area ────────────────────────────────────────────────
+          // ── Content: compare scrolls; shades = horizontal strip only (slider below, not in ListView) ─
           Expanded(
-            child: isCompareMode 
-              ? _buildCompareContent(context)
-              : _buildShadeContent(context),
+            child: isCompareMode
+                ? _buildCompareContent(context)
+                : _buildShadeStrip(context),
           ),
-        ],
-      ),
-    );
-  }
 
-  Widget _buildTab(BuildContext context, String label, bool active, VoidCallback onTap) {
-    return GestureDetector(
-      onTap: onTap,
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Text(
-            label,
-            style: TextStyle(
-              fontSize: 13,
-              fontWeight: FontWeight.bold,
-              letterSpacing: 1.2,
-              color: active ? Colors.black : Colors.black38,
+          if (!isCompareMode) ...[
+            const SizedBox(height: 10),
+            Padding(
+              padding: EdgeInsets.fromLTRB(
+                24,
+                0,
+                24,
+                MediaQuery.paddingOf(context).bottom + 16,
+              ),
+              child: _buildIntensityRow(context),
             ),
-          ),
-          const SizedBox(height: 4),
-          AnimatedContainer(
-            duration: const Duration(milliseconds: 200),
-            width: active ? 24 : 0,
-            height: 2,
-            color: const Color(0xFF8B0000), // La Vogue Vista Burgundy
-          ),
+          ],
         ],
       ),
     );
   }
 
-  Widget _buildShadeContent(BuildContext context) {
-    return ListView(
-      padding: const EdgeInsets.only(bottom: 8),
-      children: [
-        if (shades.isNotEmpty)
-          SizedBox(
+  /// Horizontal shade swatches only — keeps vertical scroll away from the intensity [Slider] below.
+  /// Uses [LayoutBuilder] so the horizontal [ListView] always gets a finite width (required for layout).
+  Widget _buildShadeStrip(BuildContext context) {
+    if (shades.isEmpty) {
+      return const Center(child: Text('No shades available'));
+    }
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        return Align(
+          alignment: Alignment.center,
+          child: SizedBox(
             height: 56,
+            width: constraints.maxWidth,
             child: ListView.builder(
               scrollDirection: Axis.horizontal,
               padding: const EdgeInsets.symmetric(horizontal: 20),
@@ -250,45 +242,75 @@ class BottomTray extends StatelessWidget {
                               : null,
                         ),
                       ),
-                      if (selected)
-                        const Icon(Icons.check, color: Colors.white, size: 18),
+                      if (selected) const Icon(Icons.check, color: Colors.white, size: 18),
                     ],
                   ),
                 );
               },
             ),
-          )
-        else
-          const Center(child: Text("No shades available")),
-        const SizedBox(height: 10),
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 24),
-          child: Row(
-            children: [
-              const Text("INTENSITY", style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Colors.black54)),
-              Expanded(
-                child: SliderTheme(
-                  data: SliderTheme.of(context).copyWith(
-                    trackHeight: 2,
-                    activeTrackColor: const Color(0xFF8B0000),
-                    inactiveTrackColor: Colors.black12,
-                    thumbColor: const Color(0xFF8B0000),
-                    overlayColor: const Color(0xFF8B0000).withOpacity(0.12),
-                    thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 6),
-                  ),
-                  child: Slider(
-                    value: intensity,
-                    min: 0.1,
-                    max: 1.0,
-                    onChanged: onIntensityChange,
-                  ),
-                ),
-              ),
-              Text("${(intensity * 100).toInt()}%", style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold)),
-            ],
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _buildIntensityRow(BuildContext context) {
+    return Row(
+      children: [
+        const Text(
+          'INTENSITY',
+          style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: Colors.black54),
+        ),
+        Expanded(
+          child: SliderTheme(
+            data: SliderTheme.of(context).copyWith(
+              trackHeight: 2,
+              activeTrackColor: const Color(0xFF8B0000),
+              inactiveTrackColor: Colors.black12,
+              thumbColor: const Color(0xFF8B0000),
+              overlayColor: const Color(0xFF8B0000).withOpacity(0.12),
+              thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 6),
+            ),
+            child: Slider(
+              value: intensity,
+              min: 0.1,
+              max: 1.0,
+              onChanged: onIntensityChange,
+            ),
           ),
         ),
+        Text(
+          '${(intensity * 100).toInt()}%',
+          style: const TextStyle(fontSize: 10, fontWeight: FontWeight.bold),
+        ),
       ],
+    );
+  }
+
+  Widget _buildTab(BuildContext context, String label, bool active, VoidCallback onTap) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(
+            label,
+            style: TextStyle(
+              fontSize: 13,
+              fontWeight: FontWeight.bold,
+              letterSpacing: 1.2,
+              color: active ? Colors.black : Colors.black38,
+            ),
+          ),
+          const SizedBox(height: 4),
+          AnimatedContainer(
+            duration: const Duration(milliseconds: 200),
+            width: active ? 24 : 0,
+            height: 2,
+            color: const Color(0xFF8B0000), // La Vogue Vista Burgundy
+          ),
+        ],
+      ),
     );
   }
 

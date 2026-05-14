@@ -92,7 +92,7 @@ class _NativeLipRendererViewState extends State<NativeLipRendererView> {
               );
             },
             onCreatePlatformView: (params) {
-              final controller = PlatformViewsService.initSurfaceAndroidView(
+              final controller = PlatformViewsService.initExpensiveAndroidView(
                 id: params.id,
                 viewType: _viewType,
                 layoutDirection: TextDirection.ltr,
@@ -220,6 +220,8 @@ class NativeLipRendererController {
     double? scale,
     bool? mirrorX,
     double? splitPosition, // Added
+    /// When [splitPosition] is updated during compare drag, Android needs this in sync with iOS.
+    bool? isCompareMode,
   }) async {
     await _methodChannel.invokeMethod<void>('setCalibration', {
       if (offsetX != null) 'offsetX': offsetX,
@@ -227,6 +229,7 @@ class NativeLipRendererController {
       if (scale != null) 'scale': scale,
       if (mirrorX != null) 'mirrorX': mirrorX,
       if (splitPosition != null) 'splitPosition': splitPosition, // Added
+      if (isCompareMode != null) 'isCompareMode': isCompareMode,
     });
   }
 

@@ -1,7 +1,11 @@
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
+import '../services/beauty_profile_service.dart';
+import '../utils/beauty_profile_shades.dart';
 import 'edit_profile_screen.dart';
+import 'live_tryon_screen.dart';
 import 'order_history_screen.dart';
 
 const _bgTop = Color(0xFFF5F5F5);
@@ -113,6 +117,112 @@ class ProfileScreen extends StatelessWidget {
             _label('Country/Region'),
             _readOnlyField('Sri Lanka'),
             const SizedBox(height: 20),
+            if (user != null)
+              StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+                stream: FirebaseFirestore.instance
+                    .collection('users')
+                    .doc(user.uid)
+                    .snapshots(),
+                builder: (context, snap) {
+                  final data = snap.data?.data();
+                  final bp = data?['beautyProfile'];
+                  if (bp is! Map) {
+                    return Material(
+                      color: _fieldFill,
+                      borderRadius: BorderRadius.circular(7),
+                      clipBehavior: Clip.antiAlias,
+                      child: ListTile(
+                        leading: const Icon(Icons.face_retouching_natural_outlined, color: _maroon),
+                        title: const Text(
+                          'Beauty profile',
+                          style: TextStyle(fontWeight: FontWeight.w700, color: _ink),
+                        ),
+                        subtitle: Text(
+                          'Open Beauty Analysis and scan a selfie — your shades save here for live try-on.',
+                          style: TextStyle(fontSize: 13, color: _ink.withValues(alpha: 0.55)),
+                        ),
+                      ),
+                    );
+                  }
+                  final m = Map<String, dynamic>.from(bp);
+                  final skin = m['skinTone'] as String? ?? '—';
+                  final under = m['undertone'] as String? ?? '—';
+                  final hairT = m['hairType'] as String? ?? '—';
+                  final hairC = m['hairColor'] as String? ?? '—';
+                  final lipShadeName = BeautyProfileShades.lipShadeNameForProfile(skin, under);
+                  final lipColor = BeautyProfileService.lipColorFromProfileMap(m) ??
+                      BeautyProfileShades.lipPrimaryForProfile(skin, under);
+                  return Material(
+                    color: _fieldFill,
+                    borderRadius: BorderRadius.circular(7),
+                    clipBehavior: Clip.antiAlias,
+                    child: Padding(
+                      padding: const EdgeInsets.fromLTRB(16, 14, 16, 14),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Row(
+                            children: [
+                              const Icon(Icons.auto_awesome, color: _maroon, size: 22),
+                              const SizedBox(width: 10),
+                              const Expanded(
+                                child: Text(
+                                  'My beauty profile',
+                                  style: TextStyle(fontWeight: FontWeight.w800, color: _ink, fontSize: 16),
+                                ),
+                              ),
+                              Container(
+                                width: 28,
+                                height: 28,
+                                decoration: BoxDecoration(
+                                  color: lipColor,
+                                  shape: BoxShape.circle,
+                                  border: Border.all(color: _fieldBorder),
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 10),
+                          Text(
+                            'Skin: $skin · $under',
+                            style: TextStyle(fontSize: 13, color: _ink.withValues(alpha: 0.85)),
+                          ),
+                          Text(
+                            'Hair: $hairT · $hairC',
+                            style: TextStyle(fontSize: 13, color: _ink.withValues(alpha: 0.85)),
+                          ),
+                          Text(
+                            'Lip try-on: $lipShadeName',
+                            style: const TextStyle(fontSize: 12, color: _maroon, fontWeight: FontWeight.w600),
+                          ),
+                          const SizedBox(height: 12),
+                          SizedBox(
+                            width: double.infinity,
+                            child: FilledButton(
+                              style: FilledButton.styleFrom(
+                                backgroundColor: _maroon,
+                                foregroundColor: Colors.white,
+                              ),
+                              onPressed: () {
+                                Navigator.of(context).push(
+                                  LiveTryOnScreen.route(
+                                    productName: 'My profile lip',
+                                    productCategory: 'cmd_lipstick',
+                                    productColor: lipColor,
+                                    shadeName: '$skin · $under · $lipShadeName',
+                                  ),
+                                );
+                              },
+                              child: const Text('Try my lip shade live'),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  );
+                },
+              ),
+            if (user != null) const SizedBox(height: 16),
             Material(
               color: _fieldFill,
               borderRadius: BorderRadius.circular(7),

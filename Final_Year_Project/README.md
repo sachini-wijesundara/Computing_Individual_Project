@@ -42,7 +42,9 @@ If an **IDE or agent status panel** shows `OPENROUTER_API_KEY` / `OPENROUTER_MOD
 
 **Manual QA:** use `docs/QA_CHECKLIST.md` (session template + device checks). Automated: `flutter pub get`, then `./scripts/qa_automated.sh` (runs analyze with non-fatal infos/warnings + `flutter test`).
 
-**Web hosting (Firebase — admin + delivery only):** `docs/HOSTING.md`. One-time: `./scripts/setup_firebase_hosting_sites.sh`, then `./scripts/deploy_firebase_hosting.sh`. **iOS:** same doc, TestFlight / App Store section.
+**If `flutter run` fails on a physical iPhone:** (1) **Wrong iOS support in Xcode** — if the error says `iOS XX.X is not installed` for your phone’s OS, open **Xcode → Settings → Platforms** (or **Settings → Components** in older Xcode), download that **iOS version** support, restart Xcode, then `flutter run` again. Updating **Xcode** from the App Store can also bring newer device support. (2) **Wireless debugging** — use a **USB** cable, unlock the phone, trust the computer. (3) Other build issues — open `ios/Runner.xcworkspace`, **Product → Run** once; or `flutter clean`, then `cd ios && pod install && cd ..`, then `flutter run`. Retraining only changes `assets/models/*.tflite`; it does not install Xcode platforms.
+
+**Web hosting (Firebase — admin + delivery only):** `docs/HOSTING.md` — `./scripts/setup_firebase_hosting_sites.sh`, then `./scripts/deploy_firebase_hosting.sh`. **iOS (TestFlight / App Store, not Firebase):** same doc — app icon + splash use `assets/logo.png` (regenerate with `dart run flutter_launcher_icons` and `dart run flutter_native_splash:create` after changing the logo). Build an IPA with `./scripts/build_ios_ipa.sh` after code signing is set in Xcode.
 
 ## Live Try‑On (Lipsticks & Makeup)
 
@@ -54,13 +56,15 @@ If an **IDE or agent status panel** shows `OPENROUTER_API_KEY` / `OPENROUTER_MOD
 
 ## Skin & Hair Analysis
 
-- The Python API in `datasets/api/app.py` exposes:
-  - `POST /analyze_skin` — returns skin tone, undertone, confidence, and makeup recommendations.
-  - `POST /analyze_hair` — returns hair type, colour, confidence, and product tips.
-- The API has two possible inference modes:
-  - **`tflite` mode** — uses TensorFlow Lite models saved under `datasets/train/models/*.tflite` and mirrored into `Final_Year_Project/assets/models/`.
-  - **`pixel_analysis` / `offline` mode** — uses deterministic rules in `pixel_based_skin_analysis` and `pixel_based_hair_analysis` (plus hard‑coded fallbacks in `AIChatService`) when TFLite models are missing or the server is offline.
-- In the current setup, no `.tflite` model files are present, so the system works in **pixel‑based mode**, which is sufficient for a final‑year demo but not meant as production‑grade dermatology.
+- **Saved beauty profile (signed-in users):** After **Beauty Analysis** runs, results merge into Firestore `users/{uid}.beautyProfile` (keeps the more reliable inference tier: Gemini Vision > TFLite > server > pixel). A **deterministic lip hex** is stored for **live try-on**. **Profile** shows the summary and **Try my lip shade live**; the analysis screen has **TRY RECOMMENDED LIP LIVE**. Sign in so saves apply; guests still get on-screen results only.
+- **On-device (Flutter):** `TFLiteAnalysisService` loads `hair_type_classifier.tflite` and `hair_color_classifier.tflite` plus their `*_labels.json` files. Each model’s **output size must match** the label list (4 hair types, 5 colours). If you see “outputs 1001 classes”, replace the `.tflite` files. Requires `pip install tensorflow`.
+  - **Train from your `datasets/` tree (canonical scripts live in `datasets/train/`):**  
+    `cd datasets/train` → `python3 prepare_hair_training_from_datasets.py --max_per_class 2000` →  
+    `python3 train_hair_classifiers_tflite.py --type_dir ./hair_type_flutter --color_dir ./hair_color_flutter --epochs 20`  
+    Run from **`datasets/train/`** (see **`datasets/train/README_TRAINING.md`**). Use `--max_per_class 800` if training is slow. **Red** is a **proxy** class unless you add real red-hair photos under `hair_color_flutter/Red/`.
+  - **Quick synthetic models:** `cd datasets/train` then `python3 train_hair_classifiers_tflite.py --demo`
+- **Optional Python API** (`datasets/api/app.py` if present in your tree) may expose `POST /analyze_skin` and `POST /analyze_hair` with server-side TFLite or pixel modes.
+- **Fallbacks:** Gemini vision and pixel heuristics still apply when TFLite is skipped or fails.
 
 ## AI Beauty Chatbot
 
@@ -72,7 +76,7 @@ If an **IDE or agent status panel** shows `OPENROUTER_API_KEY` / `OPENROUTER_MOD
 ## Summary for the Project Report
 
 - **Live Try‑On**: real‑time graphics pipeline (MediaPipe + shaders), independent of ML training.
-- **Skin & Hair Matching**: currently uses **pixel‑based analysis** with configurable upgrade path to `.tflite` classifiers from the training scripts in `datasets/train/*.py`.
+- **Skin & Hair Matching:** Flutter uses **TFLite** hair classifiers when output sizes match `*_labels.json`; otherwise **Gemini** / **pixel** fallbacks apply. Regenerate models from **`datasets/train/train_hair_classifiers_tflite.py`** (see **Skin & Hair Analysis** and `datasets/train/README_TRAINING.md`).
 - **AI Bot**: uses a curated beauty knowledge base with optional backend server; has graceful offline fallbacks in the Flutter app.
 
 Heavy CNN training is therefore an **optional enhancement**. The app as delivered can be built and demonstrated end‑to‑end using the existing assets and pixel‑analysis logic.

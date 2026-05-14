@@ -150,32 +150,38 @@ class MainScreen extends StatelessWidget {
             padding: const EdgeInsets.all(20.0),
             child: Column(
               mainAxisAlignment: MainAxisAlignment.center,
+              crossAxisAlignment: CrossAxisAlignment.center,
               children: [
                 // Logo
-                Container(
-                  width: 120,
-                  height: 120,
-                  decoration: BoxDecoration(
-                    shape: BoxShape.circle,
-                    gradient: const LinearGradient(
-                      colors: [Color(0xFFE91E63), Color(0xFFFF4081)],
-                    ),
-                    boxShadow: [
-                      BoxShadow(
-                        color: const Color(0xFFE91E63).withOpacity(0.3),
-                        blurRadius: 20,
-                        offset: const Offset(0, 10),
+                Center(
+                  child: Container(
+                    width: 120,
+                    height: 120,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      gradient: const LinearGradient(
+                        colors: [Color(0xFFE91E63), Color(0xFFFF4081)],
                       ),
-                    ],
-                  ),
-                  child: ClipOval(
-                    child: Image.asset(
-                      'assets/logo.png',
-                      fit: BoxFit.contain,
-                      errorBuilder: (_, __, ___) => const Icon(
-                        Icons.face_retouching_natural,
-                        size: 60,
-                        color: Colors.white,
+                      boxShadow: [
+                        BoxShadow(
+                          color: const Color(0xFFE91E63).withOpacity(0.3),
+                          blurRadius: 20,
+                          offset: const Offset(0, 10),
+                        ),
+                      ],
+                    ),
+                    child: ClipOval(
+                      child: Center(
+                        child: Image.asset(
+                          'assets/logo.png',
+                          fit: BoxFit.contain,
+                          alignment: Alignment.center,
+                          errorBuilder: (_, __, ___) => const Icon(
+                            Icons.face_retouching_natural,
+                            size: 60,
+                            color: Colors.white,
+                          ),
+                        ),
                       ),
                     ),
                   ),
