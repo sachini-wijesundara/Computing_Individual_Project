@@ -48,6 +48,40 @@ fileprivate func hslToRGB(_ h: Float, _ s: Float, _ l: Float) -> (r: Float, g: F
     return (max(0, min(1, r1+m)), max(0, min(1, g1+m)), max(0, min(1, b1+m)))
 }
 
+/// Bilinear sample of BGRA8888 (premultiplied or straight); returns 0..1 RGB.
+fileprivate func sampleBGRABilinear(
+  _ cam: UnsafePointer<UInt8>,
+  bytesPerRow: Int,
+  bufW: Int,
+  bufH: Int,
+  u: Float,
+  v: Float
+) -> (r: Float, g: Float, b: Float) {
+  guard bufW > 0, bufH > 0 else { return (0, 0, 0) }
+  let fx = u * Float(bufW - 1)
+  let fy = v * Float(bufH - 1)
+  let x0 = Int(floor(fx)), y0 = Int(floor(fy))
+  let tx = fx - Float(x0)
+  let ty = fy - Float(y0)
+  let x1 = min(x0 + 1, bufW - 1)
+  let y1 = min(y0 + 1, bufH - 1)
+  let x0c = max(0, min(bufW - 1, x0))
+  let y0c = max(0, min(bufH - 1, y0))
+  func pix(_ x: Int, _ y: Int) -> (Float, Float, Float) {
+    let o = y * bytesPerRow + x * 4
+    return (Float(cam[o + 2]), Float(cam[o + 1]), Float(cam[o + 0]))
+  }
+  let c00 = pix(x0c, y0c)
+  let c10 = pix(x1, y0c)
+  let c01 = pix(x0c, y1)
+  let c11 = pix(x1, y1)
+  let w00 = (1 - tx) * (1 - ty), w10 = tx * (1 - ty), w01 = (1 - tx) * ty, w11 = tx * ty
+  let r = (c00.0 * w00 + c10.0 * w10 + c01.0 * w01 + c11.0 * w11) / 255.0
+  let g = (c00.1 * w00 + c10.1 * w10 + c01.1 * w01 + c11.1 * w11) / 255.0
+  let b = (c00.2 * w00 + c10.2 * w10 + c01.2 * w01 + c11.2 * w11) / 255.0
+  return (max(0, min(1, r)), max(0, min(1, g)), max(0, min(1, b)))
+}
+
 /// Shared fingertip extraction for photo `detectTips` and live nail overlay.
 fileprivate func iosHandTipsFromResult(_ result: HandLandmarkerResult?) -> [[String: Double]] {
   guard let result = result else { return [] }
@@ -762,14 +796,25 @@ private class NativeLipRendererView: NSObject, FlutterPlatformView, FlutterStrea
   private var previewLayer: AVCaptureVideoPreviewLayer?
   private var faceLandmarker: FaceLandmarker?
   private var hairSegmenter: ImageSegmenter?
+  /// Live hair **colour** uses `.image` mode (no VIDEO temporal smoothing → less motion lag). Wig keeps [hairSegmenter] (`.video`).
+  private var hairColorImageSegmenter: ImageSegmenter?
   private var isProcessingHair = false
+  /// Previous hair-mask RGBA (1/4-res, premultiplied); EMA reduces edge flicker on live preview.
+  private var lastHairMaskRgba: [UInt8]?
   private let hairQueue = DispatchQueue(label: "hair_processing", qos: .userInteractive)
+  /// Live hair colour: coalesce to **latest** `CMSampleBuffer` (retained) so MediaPipe sees the same
+  /// framing as wig mode (`MPImage(sampleBuffer:)`) and we keep pixel data valid for `hairQueue`.
+  private let hairCoalesceLock = NSLock()
+  private var latestHairSampleBuffer: CMSampleBuffer?
+  private var hairColorPipeRunning = false
+  private var hairColorLastSegmentTsMs: Int = 0
+  /// Latest main-thread hair UI token: stale `async` blocks bail out (avoids `DispatchWorkItem.cancel` races that can flicker).
+  private let hairUiSerialLock = NSLock()
+  private var hairUiApplySerial: Int = 0
   /// Serializes photo decode + face detect + PNG render so rapid `setLook` taps cannot overlap (jetsam).
   private let photoRenderQueue = DispatchQueue(label: "com.lavoguevista.native_lip_renderer.photo_pipeline")
   private let nailSegQueue = DispatchQueue(label: "nail_seg_processing", qos: .userInitiated)
   private var isProcessingNailSeg = false
-  private var skippedHairFrames = 0
-  private let kMaxSkip = 3
   // Wig mode: run heavy segmenter only every N frames; landmark runs every frame
   private var wigFrameCounter  = 0
   private let wigSegmentEvery  = 15   // ~1 mask refresh per second at 15fps
@@ -854,6 +899,8 @@ private class NativeLipRendererView: NSObject, FlutterPlatformView, FlutterStrea
   private let forceSimpleNailMode = true
   /// Snapshot from `layoutSubviews` (main thread only). Never read `UIView.bounds` from the camera queue.
   private var lastLayoutBounds: CGRect = .zero
+  /// Front camera preview is mirrored; segmentation uses the unmirrored buffer — flip hair layers to match.
+  private var hairFlipToMatchMirroredPreview: Bool = false
   
   // Smoothing state for 3D Wig Tracking
   private var lastWigPosition: CGPoint?
@@ -889,6 +936,7 @@ private class NativeLipRendererView: NSObject, FlutterPlatformView, FlutterStrea
         self?.hairSideLayer.frame = bounds
         self?.hairMaskLayer.frame = bounds
         self?.hairImageLayer.frame = bounds
+        self?.applyHairOverlayFlipForPreview(bounds: bounds)
         self?.nailOverlayLayer.frame   = bounds
         self?.nailCuticleLayer.frame   = bounds
         self?.nailHighlightLayer.frame = bounds
@@ -936,7 +984,15 @@ private class NativeLipRendererView: NSObject, FlutterPlatformView, FlutterStrea
     hairMaskLayer.frame = container.bounds
     hairMaskLayer.opacity = 0.0
     hairMaskLayer.contentsGravity = .resizeAspectFill
+    hairMaskLayer.minificationFilter = .trilinear
+    hairMaskLayer.magnificationFilter = .trilinear
     hairMaskLayer.compositingFilter = nil
+    hairMaskLayer.actions = [
+      "contents": NSNull(),
+      "opacity": NSNull(),
+      "bounds": NSNull(),
+      "position": NSNull(),
+    ]
     container.layer.addSublayer(hairMaskLayer)
     
     hairImageLayer.frame = container.bounds
@@ -1059,22 +1115,40 @@ private class NativeLipRendererView: NSObject, FlutterPlatformView, FlutterStrea
   }
 
   private func setupHairSegmenter() {
-    if let modelPath = Bundle.main.path(forResource: "hair_segmenter", ofType: "tflite") {
-        print("DEBUG: Found hair_segmenter.tflite at \(modelPath)")
-        let options = ImageSegmenterOptions()
-        options.baseOptions.modelAssetPath = modelPath
-        options.runningMode = .video
-        options.shouldOutputConfidenceMasks = true
-        options.shouldOutputCategoryMask    = false // Keep this from original
-        do {
-            hairSegmenter = try ImageSegmenter(options: options)
-            print("DEBUG: ImageSegmenter initialized successfully")
-        } catch {
-            print("DEBUG: ImageSegmenter failed to initialize: \(error)")
-        }
-    } else {
+    if hairSegmenter != nil, hairColorImageSegmenter != nil { return }
+    guard let modelPath = Bundle.main.path(forResource: "hair_segmenter", ofType: "tflite") else {
         print("DEBUG: hair_segmenter.tflite NOT FOUND in bundle")
-        print("⚠️ iOS: hair_segmenter.tflite not found — hair segmentation unavailable") // Keep original warning
+        print("⚠️ iOS: hair_segmenter.tflite not found — hair segmentation unavailable")
+        return
+    }
+    print("DEBUG: Found hair_segmenter.tflite at \(modelPath)")
+
+    if hairSegmenter == nil {
+      let vOpts = ImageSegmenterOptions()
+      vOpts.baseOptions.modelAssetPath = modelPath
+      vOpts.runningMode = .video
+      vOpts.shouldOutputConfidenceMasks = true
+      vOpts.shouldOutputCategoryMask = false
+      do {
+        hairSegmenter = try ImageSegmenter(options: vOpts)
+        print("DEBUG: ImageSegmenter (video) initialized for hair style / fallback")
+      } catch {
+        print("DEBUG: ImageSegmenter (video) failed: \(error)")
+      }
+    }
+
+    if hairColorImageSegmenter == nil {
+      let iOpts = ImageSegmenterOptions()
+      iOpts.baseOptions.modelAssetPath = modelPath
+      iOpts.runningMode = .image
+      iOpts.shouldOutputConfidenceMasks = true
+      iOpts.shouldOutputCategoryMask = false
+      do {
+        hairColorImageSegmenter = try ImageSegmenter(options: iOpts)
+        print("DEBUG: ImageSegmenter (image) initialized for live hair colour")
+      } catch {
+        print("DEBUG: ImageSegmenter (image) failed — live colour will use video segmenter: \(error)")
+      }
     }
   }
 
@@ -1165,12 +1239,14 @@ private class NativeLipRendererView: NSObject, FlutterPlatformView, FlutterStrea
                 self.lipOverlayLayer.path = nil
                 self.lipOverlayLayer.opacity = 0
                 for sl in self.makeupSlotLayers {
-                    sl.path = nil
-                    sl.opacity = 0
+                  sl.path = nil
+                  sl.opacity = 0
                 }
                 self.makeupStackParent.mask = nil
                 CATransaction.commit()
             }
+            // Live hair: soft-light composites tint with the camera preview (more “in the hair” than srcOver alone).
+            self.hairMaskLayer.compositingFilter = (cLow == "cmd_haircolor") ? "softLightBlendMode" : nil
         }
         result(nil)
     case "setLook":
@@ -1314,7 +1390,18 @@ private class NativeLipRendererView: NSObject, FlutterPlatformView, FlutterStrea
     }
 
     let session = AVCaptureSession()
-    session.sessionPreset = .hd1280x720
+    // Smaller frames for live hair colour → MediaPipe + mask finish sooner → less tint lag when moving.
+    if cat == "cmd_haircolor" {
+      if session.canSetSessionPreset(.vga640x480) {
+        session.sessionPreset = .vga640x480
+      } else if session.canSetSessionPreset(.medium) {
+        session.sessionPreset = .medium
+      } else {
+        session.sessionPreset = .hd1280x720
+      }
+    } else {
+      session.sessionPreset = .hd1280x720
+    }
 
     let position: AVCaptureDevice.Position = isNailCategory() ? .back : .front
     guard let device = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: position),
@@ -1345,6 +1432,18 @@ private class NativeLipRendererView: NSObject, FlutterPlatformView, FlutterStrea
       }
     }
 
+    // Live hair: modest FPS cap so each segmentation + mask pass can finish before the next frame piles up
+    // (reduces “tint dragging behind” the face when moving).
+    if cat == "cmd_haircolor" {
+      do {
+        try device.lockForConfiguration()
+        device.activeVideoMinFrameDuration = CMTime(value: 1, timescale: 18)
+        device.unlockForConfiguration()
+      } catch {
+        print("⚠️ iOS: hair colour FPS cap: \(error)")
+      }
+    }
+
     if session.canAddInput(input) {
         session.addInput(input)
     }
@@ -1352,16 +1451,21 @@ private class NativeLipRendererView: NSObject, FlutterPlatformView, FlutterStrea
     let output = AVCaptureVideoDataOutput()
     output.alwaysDiscardsLateVideoFrames = true
     output.videoSettings = [(kCVPixelBufferPixelFormatTypeKey as String): Int(kCVPixelFormatType_32BGRA)]
-    output.setSampleBufferDelegate(self, queue: DispatchQueue(label: "camera_queue"))
+    output.setSampleBufferDelegate(self, queue: DispatchQueue(label: "camera_queue", qos: .userInteractive))
     if session.canAddOutput(output) {
         session.addOutput(output)
     }
     
     if let connection = output.connection(with: .video) {
         if connection.isVideoOrientationSupported { connection.videoOrientation = .portrait }
-        if connection.isVideoMirroringSupported { connection.isVideoMirrored = (position == .front) }
+        // Do **not** set `isVideoMirrored` on the video-data output connection: on recent iOS,
+        // `automaticallyAdjustsVideoMirroring` may stay YES for this connection type, which
+        // throws if you call `setVideoMirrored:`. ML uses the natural buffer; hair overlay flip
+        // (`hairFlipToMatchMirroredPreview`) matches the mirrored preview instead.
         if connection.isVideoStabilizationSupported { connection.preferredVideoStabilizationMode = .off }
     }
+
+    hairFlipToMatchMirroredPreview = (position == .front)
 
     let preview = AVCaptureVideoPreviewLayer(session: session)
     preview.frame = container.bounds
@@ -1382,76 +1486,223 @@ private class NativeLipRendererView: NSObject, FlutterPlatformView, FlutterStrea
     DispatchQueue.main.async { [weak self] in
       guard let self else { return }
       session.startRunning()
+      self.applyPreviewVideoMirroring(forCameraPosition: position)
       self.container.setNeedsLayout()
       self.container.layoutIfNeeded()
       self.previewLayer?.frame = self.container.bounds
+      self.applyHairOverlayFlipForPreview(bounds: self.container.bounds)
       self.sendEvent(["type": "ready"])
       // Flutter PlatformView often lays out after the first frame; a second main-queue pass
       // fixes a persistent black preview when bounds were still .zero during startRunning().
       DispatchQueue.main.async { [weak self] in
         guard let self else { return }
+        self.applyPreviewVideoMirroring(forCameraPosition: position)
         self.previewLayer?.frame = self.container.bounds
+        self.applyHairOverlayFlipForPreview(bounds: self.container.bounds)
       }
     }
   }
 
+  /// Horizontally flip hair bitmap layers so they align with the **mirrored** front-camera preview
+  /// (`CMSampleBuffer` / MediaPipe use the unmirrored buffer by default).
+  private func applyHairOverlayFlipForPreview(bounds: CGRect) {
+    guard hairFlipToMatchMirroredPreview, bounds.width > 2, bounds.height > 2 else {
+      hairMaskLayer.setAffineTransform(.identity)
+      hairImageLayer.setAffineTransform(.identity)
+      return
+    }
+    hairMaskLayer.setAffineTransform(CGAffineTransform(scaleX: -1, y: 1))
+    hairImageLayer.setAffineTransform(CGAffineTransform(scaleX: -1, y: 1))
+  }
+
+  /// Preview mirroring must run with `automaticallyAdjustsVideoMirroring == false` and is safest **after** `startRunning()`.
+  private func applyPreviewVideoMirroring(forCameraPosition position: AVCaptureDevice.Position) {
+    guard let conn = previewLayer?.connection else { return }
+    guard conn.isVideoMirroringSupported else { return }
+    conn.automaticallyAdjustsVideoMirroring = false
+    conn.isVideoMirrored = (position == .front)
+  }
+
   private func stopCamera() {
+    lastHairMaskRgba = nil
+    hairFlipToMatchMirroredPreview = false
+    hairMaskLayer.setAffineTransform(.identity)
+    hairMaskLayer.compositingFilter = nil
+    hairImageLayer.setAffineTransform(.identity)
+    hairUiSerialLock.lock()
+    hairUiApplySerial = 0
+    hairUiSerialLock.unlock()
+    hairCoalesceLock.lock()
+    latestHairSampleBuffer = nil
+    hairColorPipeRunning = false
+    hairColorLastSegmentTsMs = 0
+    hairCoalesceLock.unlock()
     captureSession?.stopRunning()
     previewLayer?.removeFromSuperlayer()
     captureSession = nil
     previewLayer = nil
   }
 
+  /// Drain the single-slot hair queue under one lock so we always process the **freshest** frame
+  /// (avoids spinning on `continue` when a new sample arrives every frame while ML is slower than FPS).
+  private func dequeueCoalescedLatestHairSampleBuffer() -> CMSampleBuffer? {
+    hairCoalesceLock.lock()
+    defer { hairCoalesceLock.unlock() }
+    guard var sb = latestHairSampleBuffer else { return nil }
+    latestHairSampleBuffer = nil
+    while let newer = latestHairSampleBuffer {
+      sb = newer
+      latestHairSampleBuffer = nil
+    }
+    return sb
+  }
+
+  /// Enqueue latest camera sample; a serial worker on `hairQueue` keeps only the freshest buffer.
+  private func enqueueLiveHairColorSampleBuffer(_ sampleBuffer: CMSampleBuffer) {
+    hairCoalesceLock.lock()
+    latestHairSampleBuffer = sampleBuffer
+    let shouldStart = !hairColorPipeRunning
+    hairColorPipeRunning = true
+    hairCoalesceLock.unlock()
+    if shouldStart {
+      hairQueue.async { [weak self] in
+        self?.drainLiveHairColorFrames()
+      }
+    }
+  }
+
+  private func drainLiveHairColorFrames() {
+    while true {
+      guard let sb = dequeueCoalescedLatestHairSampleBuffer() else {
+        hairCoalesceLock.lock()
+        hairColorPipeRunning = false
+        hairCoalesceLock.unlock()
+        return
+      }
+
+      let capTs: Int = {
+        let pts = CMSampleBufferGetPresentationTimeStamp(sb)
+        let sec = CMTimeGetSeconds(pts)
+        if sec.isFinite, sec > 0 { return Int(sec * 1000.0) }
+        return Int(Date().timeIntervalSince1970 * 1000.0)
+      }()
+
+      let cat = currentCategory.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+      guard cat == "cmd_haircolor" else {
+        hairCoalesceLock.lock()
+        latestHairSampleBuffer = nil
+        hairColorPipeRunning = false
+        hairCoalesceLock.unlock()
+        return
+      }
+
+      guard hairSegmenter != nil || hairColorImageSegmenter != nil else {
+        hairCoalesceLock.lock()
+        latestHairSampleBuffer = nil
+        hairColorPipeRunning = false
+        hairCoalesceLock.unlock()
+        return
+      }
+
+      guard let pb = CMSampleBufferGetImageBuffer(sb) else { continue }
+
+      let mpImage: MPImage
+      do {
+        mpImage = try MPImage(sampleBuffer: sb)
+      } catch {
+        continue
+      }
+
+      let segResult: ImageSegmenterResult
+      do {
+        if let ims = hairColorImageSegmenter {
+          segResult = try ims.segment(image: mpImage)
+        } else if let vs = hairSegmenter {
+          hairColorLastSegmentTsMs = max(hairColorLastSegmentTsMs + 1, capTs)
+          segResult = try vs.segment(
+            videoFrame: mpImage,
+            timestampInMilliseconds: hairColorLastSegmentTsMs)
+        } else {
+          continue
+        }
+      } catch {
+        continue
+      }
+
+      let shade = currentShade
+      let intensity = Float(currentIntensity)
+      let cgImg = processHairMask(
+        segResult,
+        pixelBuffer: pb,
+        shade: shade,
+        styleShape: nil,
+        liveColourTemporalBlend: false,
+        liveColourAlphaTemporalSmooth: false,
+        processingScale: 10)
+
+      let imgRef = cgImg
+      let opacityRef = intensity
+      hairUiSerialLock.lock()
+      hairUiApplySerial += 1
+      let token = hairUiApplySerial
+      hairUiSerialLock.unlock()
+      DispatchQueue.main.async { [weak self] in
+        guard let self else { return }
+        self.hairUiSerialLock.lock()
+        let latest = self.hairUiApplySerial
+        self.hairUiSerialLock.unlock()
+        guard token == latest else { return }
+        let stillHair = self.currentCategory.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "cmd_haircolor"
+        guard stillHair else { return }
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        if let img = imgRef {
+          self.hairMaskLayer.compositingFilter = "softLightBlendMode"
+          self.hairMaskLayer.contents = img
+          self.hairMaskLayer.opacity = opacityRef
+        }
+        self.hairImageLayer.opacity = 0
+        self.lipOverlayLayer.opacity = 0
+        CATransaction.commit()
+        CATransaction.flush()
+      }
+
+      hairCoalesceLock.lock()
+      if latestHairSampleBuffer == nil {
+        hairColorPipeRunning = false
+        hairCoalesceLock.unlock()
+        return
+      }
+      hairCoalesceLock.unlock()
+    }
+  }
 
   func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
     let catLower = currentCategory.trimmingCharacters(in: .whitespaces).lowercased()
     let isHairColorMode   = catLower == "cmd_haircolor"
     let isHairStyleMode   = catLower == "cmd_hairstyle"
 
+    if isHairColorMode {
+      autoreleasepool {
+        setupHairSegmenter()
+        guard hairSegmenter != nil || hairColorImageSegmenter != nil,
+              CMSampleBufferGetImageBuffer(sampleBuffer) != nil else { return }
+        if let pb = CMSampleBufferGetImageBuffer(sampleBuffer) {
+          lastCaptureBufferWidth = CGFloat(CVPixelBufferGetWidth(pb))
+          lastCaptureBufferHeight = CGFloat(CVPixelBufferGetHeight(pb))
+        }
+        enqueueLiveHairColorSampleBuffer(sampleBuffer)
+      }
+      return
+    }
+
     autoreleasepool {
       do {
         let image       = try MPImage(sampleBuffer: sampleBuffer)
         let timestampMs = Int(Date().timeIntervalSince1970 * 1000)
 
-        // ── HAIR COLOR MODE ──────────────────────────────────────────────────
-        if isHairColorMode {
-          if hairSegmenter == nil { setupHairSegmenter() }
-          guard let segmenter = hairSegmenter else { return }
-          if isProcessingHair {
-            skippedHairFrames += 1
-            if skippedHairFrames >= kMaxSkip {
-              DispatchQueue.main.async { [weak self] in
-                CATransaction.begin(); CATransaction.setDisableActions(true)
-                self?.hairMaskLayer.opacity = 0
-                CATransaction.commit()
-              }
-            }
-            return
-          }
-          isProcessingHair  = true
-          skippedHairFrames = 0
-          let segResult = try segmenter.segment(videoFrame: image, timestampInMilliseconds: timestampMs)
-          guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else {
-            self.isProcessingHair = false; return
-          }
-          let shade    = self.currentShade
-          let intensity = Float(self.currentIntensity)
-          hairQueue.async { [weak self] in
-            guard let self = self else { return }
-            let cgImg = self.processHairMask(segResult, pixelBuffer: pixelBuffer, shade: shade, styleShape: nil)
-            DispatchQueue.main.async {
-              CATransaction.begin(); CATransaction.setDisableActions(true)
-              if let img = cgImg { self.hairMaskLayer.contents = img; self.hairMaskLayer.opacity = intensity }
-              else { self.hairMaskLayer.opacity = 0 }
-              self.hairImageLayer.opacity  = 0
-              self.lipOverlayLayer.opacity = 0
-              CATransaction.commit()
-              self.isProcessingHair = false
-            }
-          }
-
         // ── HAIR STYLE (WIG) MODE ────────────────────────────────────────────
-        } else if isHairStyleMode {
+        if isHairStyleMode {
           if faceLandmarker == nil { setupFaceLandmarker() }
           if hairSegmenter == nil { setupHairSegmenter() }
           // A) FaceLandmarker EVERY frame → smooth wig tracking
@@ -1478,6 +1729,7 @@ private class NativeLipRendererView: NSObject, FlutterPlatformView, FlutterStrea
             DispatchQueue.main.async {
               CATransaction.begin(); CATransaction.setDisableActions(true)
               if let img = cgImg {
+                self.hairMaskLayer.compositingFilter = nil
                 self.hairMaskLayer.contents = img
                 self.hairMaskLayer.opacity  = Float(self.currentIntensity)
               }
@@ -2336,7 +2588,10 @@ private class NativeLipRendererView: NSObject, FlutterPlatformView, FlutterStrea
   private func processHairMask(_ result: ImageSegmenterResult,
                                 pixelBuffer: CVPixelBuffer,
                                 shade: UIColor,
-                                styleShape: String? = nil) -> CGImage? {
+                                styleShape: String? = nil,
+                                liveColourTemporalBlend: Bool = true,
+                                liveColourAlphaTemporalSmooth: Bool = false,
+                                processingScale: Int = 4) -> CGImage? {
     guard let maskList = result.confidenceMasks, !maskList.isEmpty else { return nil }
 
     let hairMask = selectHairConfidenceMask(from: maskList)
@@ -2360,7 +2615,7 @@ private class NativeLipRendererView: NSObject, FlutterPlatformView, FlutterStrea
     guard let base  = CVPixelBufferGetBaseAddress(pixelBuffer) else { return nil }
     let cam         = base.assumingMemoryBound(to: UInt8.self)
 
-    let scale  = 4
+    let scale  = max(2, min(10, processingScale))
     let procW  = max(1, maskW / scale)
     let procH  = max(1, maskH / scale)
     let count  = procW * procH
@@ -2375,18 +2630,39 @@ private class NativeLipRendererView: NSObject, FlutterPlatformView, FlutterStrea
 
       let mx   = min(maskW - 1, px * scale)
       let my   = min(maskH - 1, py * scale)
-      var conf = hairPixels[my * maskW + mx]
+      // 3×3 box average on confidence reduces blocky mask noise when downsampled (scale=4).
+      var conf: Float = 0
+      for dy in -1...1 {
+        for dx in -1...1 {
+          let sx = min(maskW - 1, max(0, mx + dx))
+          let sy = min(maskH - 1, max(0, my + dy))
+          conf += hairPixels[sy * maskW + sx]
+        }
+      }
+      conf *= (1.0 / 9.0)
 
-      let lo = isStyle ? Float(0.18) : Float(0.20)
-      if conf < lo {
+      // Live: higher `lo` + brow guard below → tighter hair vs skin accuracy; style unchanged.
+      let lo = isStyle ? Float(0.20) : Float(0.30)
+      let hi = isStyle ? Float(0.52) : Float(0.60)
+      if conf <= lo {
         conf = 0
+      } else if conf >= hi {
+        conf = 1
       } else {
-        let t = (conf - lo) / (1.0 - lo)
+        let t = (conf - lo) / (hi - lo)
         conf = t * t * (3.0 - 2.0 * t)
       }
 
+      // Live: soften uncertain model mass in a typical **forehead / brow / glasses-line** band (reduces skin bleed).
+      let vForGeom = Float(py) / Float(max(1, procH))
+      if !isStyle {
+        let browBand = mpSmoothstep(0.17, 0.33, vForGeom) * (1 - mpSmoothstep(0.37, 0.57, vForGeom))
+        let unc = 1 - conf
+        conf *= max(0, 1 - 0.55 * browBand * unc * unc)
+      }
+
       let u = Float(px) / Float(max(1, procW))
-      let v = Float(py) / Float(max(1, procH))
+      let v = vForGeom
 
       var lenMul: Float = 1
       if isStyle {
@@ -2409,13 +2685,10 @@ private class NativeLipRendererView: NSObject, FlutterPlatformView, FlutterStrea
       let alpha = UInt8(min(255, conf * 255 * lenMul))
       guard alpha > 0 else { continue }
 
-      let cx  = max(0, min(bufW - 1, px * bufW / procW))
-      let cy  = max(0, min(bufH - 1, py * bufH / procH))
-      let off = cy * bytesPerRow + cx * 4
-
-      let srcB = Float(cam[off + 0]) / 255.0
-      let srcG = Float(cam[off + 1]) / 255.0
-      let srcR = Float(cam[off + 2]) / 255.0
+      // Cell-centre UV → bilinear sample: keeps strand highlights/shadows (nearest-neighbour looked flat/blocky).
+      let uBuf = (Float(px) + 0.5) / Float(max(1, procW))
+      let vBuf = (Float(py) + 0.5) / Float(max(1, procH))
+      let (srcR, srcG, srcB) = sampleBGRABilinear(cam, bytesPerRow: bytesPerRow, bufW: bufW, bufH: bufH, u: uBuf, v: vBuf)
 
       let (_, srcS, srcL) = rgbToHSL(srcR, srcG, srcB)
 
@@ -2431,12 +2704,14 @@ private class NativeLipRendererView: NSObject, FlutterPlatformView, FlutterStrea
         continue
       }
 
-      let lumFloor: Float = 0.75
-      resultL = max(srcL, tgtL0 * lumFloor)
-      let accentBoost: Float = 0.25
-      effS = min(1, srcS * (1 - accentBoost) + effS * accentBoost)
-
       if isStyle {
+        // Wig / style path: stronger lift + art-directed shapes.
+        let lumFloor: Float = 0.62
+        let baseL = max(srcL, tgtL0 * lumFloor)
+        resultL = min(1, baseL * 0.78 + srcL * 0.22)
+        let accentBoost: Float = 0.20
+        effS = min(1, srcS * (1 - accentBoost) + effS * accentBoost)
+
         switch shape {
         case "waves", "beachy_waves", "layer_lob", "side_swept":
           let wave = sin(u * .pi * 10.0 + Float(py) * 0.065) * 0.07
@@ -2457,16 +2732,74 @@ private class NativeLipRendererView: NSObject, FlutterPlatformView, FlutterStrea
           resultL = min(1, resultL + v * 0.04)
         }
       } else {
-        resultL = min(1, resultL + v * 0.04)
+        // Live hair colour: keep camera **luminance texture** while shifting chroma toward the shade.
+        let k = Float(alpha) / 255.0
+        effH = tgtH0
+        // Slightly less aggressive saturation than before → less “neon poster” on dark / curly hair.
+        effS = min(1, tgtS0 * (0.30 + 0.40 * k) + srcS * (0.70 - 0.28 * k))
+        effS *= (0.88 + 0.10 * k)
+        let liftBand = max(srcL, min(1, tgtL0 * (0.36 + 0.26 * srcL)))
+        resultL = min(1, srcL * (0.72 - 0.24 * k) + liftBand * (0.28 + 0.20 * k))
+        resultL = min(1, resultL + v * 0.014)
       }
 
       let (outR, outG, outB) = hslToRGB(effH, effS, resultL)
 
+      // Live only: blend tint back toward the **camera** at uncertain edges and in specular highlights
+      // so the result follows real lighting and doesn’t read as a flat red sheet.
+      var fr = outR, fg = outG, fb = outB
+      if !isStyle {
+        let k = Float(alpha) / 255.0
+        let edgeW = (1 - k) * 0.40
+        let hiW = mpSmoothstep(0.48, 0.82, srcL) * (0.34 + 0.14 * k)
+        // Low chroma (skin / grey hair) → trust camera more so colour doesn’t “stick” to cheeks or frames.
+        let lowSat = max(0, 1 - min(1, srcS / 0.17))
+        let w = min(0.72, edgeW + hiW + lowSat * 0.30 * (0.35 + 0.65 * (1 - k)))
+        fr = outR * (1 - w) + srcR * w
+        fg = outG * (1 - w) + srcG * w
+        fb = outB * (1 - w) + srcB * w
+      }
+
       let aN = Float(alpha) / 255.0
-      rgba[i*4 + 0] = UInt8(min(255, outR * aN * 255))
-      rgba[i*4 + 1] = UInt8(min(255, outG * aN * 255))
-      rgba[i*4 + 2] = UInt8(min(255, outB * aN * 255))
+      rgba[i*4 + 0] = UInt8(min(255, fr * aN * 255))
+      rgba[i*4 + 1] = UInt8(min(255, fg * aN * 255))
+      rgba[i*4 + 2] = UInt8(min(255, fb * aN * 255))
       rgba[i*4 + 3] = alpha
+    }
+
+    // Live hair-colour: optional full EMA (wig path) or alpha-only EMA (live: less edge blink, no RGB lag).
+    if !isStyle, liveColourTemporalBlend {
+      let n = rgba.count
+      if let prev = lastHairMaskRgba, prev.count == n {
+        let nw: Float = 0.86
+        let ow: Float = 1.0 - nw
+        for j in 0..<n {
+          let blended = Float(rgba[j]) * nw + Float(prev[j]) * ow
+          rgba[j] = UInt8(min(255, max(0, Int(blended.rounded(.towardZero)))))
+        }
+      }
+      lastHairMaskRgba = rgba
+    } else if !isStyle, liveColourAlphaTemporalSmooth {
+      let n = rgba.count
+      if let prev = lastHairMaskRgba, prev.count == n {
+        // Stronger temporal filter on **alpha** (edge stability); light filter on premul RGB (avoids premul/alpha mismatch flicker).
+        let nwA: Float = 0.70
+        let owA: Float = 1.0 - nwA
+        let nwC: Float = 0.93
+        let owC: Float = 1.0 - nwC
+        for base in Swift.stride(from: 0, to: n, by: 4) {
+          for c in 0..<3 {
+            let blended = Float(rgba[base + c]) * nwC + Float(prev[base + c]) * owC
+            rgba[base + c] = UInt8(min(255, max(0, Int(blended.rounded(.towardZero)))))
+          }
+          let j = base + 3
+          let blendedA = Float(rgba[j]) * nwA + Float(prev[j]) * owA
+          rgba[j] = UInt8(min(255, max(0, Int(blendedA.rounded(.towardZero)))))
+        }
+      }
+      lastHairMaskRgba = rgba
+    } else {
+      lastHairMaskRgba = nil
     }
 
     let colorSpace = CGColorSpaceCreateDeviceRGB()

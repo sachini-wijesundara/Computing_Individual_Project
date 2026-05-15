@@ -62,6 +62,7 @@ import java.nio.MappedByteBuffer
 import java.nio.channels.FileChannel
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 import javax.microedition.khronos.egl.EGLConfig
 import javax.microedition.khronos.opengles.GL10
 import kotlin.math.abs
@@ -852,6 +853,10 @@ private class LipRendererPlatformView(
   private var cameraProvider: ProcessCameraProvider? = null
   private var analyzer: ImageAnalysis? = null
   private var cameraExecutor: ExecutorService = Executors.newSingleThreadExecutor()
+  /** Hair segmentation + tint off the camera analyzer thread so frames are not stalled by ML. */
+  private val hairExecutor: ExecutorService = Executors.newSingleThreadExecutor { r ->
+    Thread(r, "hair_ml").apply { priority = Thread.NORM_PRIORITY + 2 }
+  }
   private var eventSink: EventChannel.EventSink? = null
   private var startRequested = false
 
@@ -862,9 +867,8 @@ private class LipRendererPlatformView(
   private var useBackCameraNails = false
   @Volatile private var processing = false
   private var rgbaBitmap: Bitmap? = null
-  // Stale-mask guard: clear overlay if processing falls too far behind the camera
-  private var skippedHairFrames = 0
-  private val kMaxSkip = 3
+  /** Live hair-colour EMA buffer (1/4-res ARGB); cleared for photo/style paths. */
+  private var lastHairColorMaskPixels: IntArray? = null
 
   private var currentCategory = "cmd_lipstick"
   private var isCompareMode = false
@@ -924,6 +928,14 @@ private class LipRendererPlatformView(
     eventChannel.setStreamHandler(null)
     methodChannel.setMethodCallHandler(null)
     cameraExecutor.shutdown()
+    hairExecutor.shutdown()
+    try {
+      if (!hairExecutor.awaitTermination(2, TimeUnit.SECONDS)) {
+        hairExecutor.shutdownNow()
+      }
+    } catch (_: InterruptedException) {
+      hairExecutor.shutdownNow()
+    }
     photoExecutor.execute {
       photoFaceLandmarker?.close()
       photoFaceLandmarker = null
@@ -937,6 +949,7 @@ private class LipRendererPlatformView(
     faceLandmarker = null
     handLandmarker?.close()
     handLandmarker = null
+    lastHairColorMaskPixels = null
     nailRenderer.close()
   }
 
@@ -1239,23 +1252,13 @@ private class LipRendererPlatformView(
     val isHair = isHairSegmentationMode()
     val isNails = isNailMode()
 
-    if (processing) {
-      if (isHair) {
-        // Count skipped frames; clear stale mask after kMaxSkip to prevent
-        // the hair overlay drifting onto the face when the phone moves.
-        skippedHairFrames++
-        if (skippedHairFrames >= kMaxSkip) {
-          android.os.Handler(android.os.Looper.getMainLooper()).post {
-            hairMaskOverlay.clear()
-          }
-        }
+    if (!isHair) {
+      if (processing) {
+        image.close()
+        return
       }
-      image.close()
-      return
+      processing = true
     }
-
-    processing = true
-    if (isHair) skippedHairFrames = 0
 
     val width = image.width
     val height = image.height
@@ -1265,12 +1268,57 @@ private class LipRendererPlatformView(
 
     val plane = image.planes[0]
     rgbaBitmap?.copyPixelsFromBuffer(plane.buffer)
-    val mpImage = BitmapImageBuilder(rgbaBitmap).build()
 
+    if (isHair) {
+      val rot = image.imageInfo.rotationDegrees
+      val categoryAtEnqueue = currentCategory
+      val snap = rgbaBitmap!!.copy(Bitmap.Config.ARGB_8888, false)
+      image.close()
+      scheduleLiveHairSegmentation(snap, rot, categoryAtEnqueue)
+      return
+    }
+
+    val mpImage = BitmapImageBuilder(rgbaBitmap).build()
     when {
       isNails -> runHandNails(mpImage, image)
-      isHairSegmentationMode() -> runHairSegmentation(mpImage, image)
       else -> runFaceMesh(mpImage, image)
+    }
+  }
+
+  /** Runs on [hairExecutor]; [frameCopy] is recycled here. */
+  private fun scheduleLiveHairSegmentation(frameCopy: Bitmap, rotationDegrees: Int, categoryAtEnqueue: String) {
+    hairExecutor.execute {
+      try {
+        if (currentCategory != categoryAtEnqueue) return@execute
+        if (!ensureHairSegmenter()) return@execute
+        val mpImage = BitmapImageBuilder(frameCopy).build()
+        val result = try {
+          hairSegmenter!!.segment(mpImage)
+        } catch (t: Throwable) {
+          Log.e("HairSegmenter", "Segmentation error", t)
+          return@execute
+        }
+        if (currentCategory != categoryAtEnqueue) return@execute
+        val coloredBitmap = if (currentCategory == "cmd_hairstyle") {
+          buildHairStyleEffectBitmap(result, cameraTexture = frameCopy)
+        } else {
+          buildHairColorBitmap(result, cameraTexture = frameCopy)
+        }
+        val intensity = currentIntensity
+        val mirrorX = !useBackCameraNails
+        val oriented = coloredBitmap?.let { orientHairMaskLikePreview(it, rotationDegrees, mirrorX) }
+        if (oriented != null) {
+          android.os.Handler(android.os.Looper.getMainLooper()).post {
+            hairMaskOverlay.drawHairMask(oriented)
+            hairMaskOverlay.alpha = intensity
+            glOverlay.hideAllOverlays()
+            makeupVectorOverlay.clear()
+            makeupVectorOverlay.visibility = View.GONE
+          }
+        }
+      } finally {
+        frameCopy.recycle()
+      }
     }
   }
 
@@ -1692,48 +1740,20 @@ private class LipRendererPlatformView(
     image.close()
   }
 
-  // ─── Hair segmentation → luminance-boosted HSL mask ──────────────────────
-  private fun runHairSegmentation(mpImage: MPImage, image: ImageProxy) {
-    if (!ensureHairSegmenter()) { processing = false; image.close(); return }
-
-    try {
-      val result: ImageSegmenterResult = hairSegmenter!!.segment(mpImage)
-      val coloredBitmap = if (currentCategory == "cmd_hairstyle") {
-        buildHairStyleEffectBitmap(result)
-      } else {
-        buildHairColorBitmap(result)
-      }
-      val intensity = currentIntensity
-      val rot = image.imageInfo.rotationDegrees
-      val mirrorX = !useBackCameraNails
-      val oriented = coloredBitmap?.let { orientHairMaskLikePreview(it, rot, mirrorX) }
-      android.os.Handler(android.os.Looper.getMainLooper()).post {
-        hairMaskOverlay.drawHairMask(oriented)
-        hairMaskOverlay.alpha = intensity   // intensity = global strength, like lipstick alpha
-        glOverlay.hideAllOverlays()
-        makeupVectorOverlay.clear()
-        makeupVectorOverlay.visibility = View.GONE
-      }
-    } catch (t: Throwable) {
-      Log.e("HairSegmenter", "Segmentation error", t)
-    }
-
-    processing = false
-    image.close()
-  }
-
   // ─── Luminance-boosted HSL hair colour bitmap ─────────────────────────────
   //
   // Aligned with iOS `processHairMask` (plain hair, no style shape):
-  //   • Saturation: blend 75% source + 25% target (accentBoost) so colour follows
-  //     natural fibre variation instead of flat poster dye.
-  //   • Luminance: max(srcL, tgtL×0.75) then + v×0.04 toward crown (subtle depth).
-  //   • Mask: smoothstep on confidence; edge lo = 0.18 to match iOS hair-colour path.
+  //   • Mask: 3×3 average on confidence, smoothstep; live colour uses lo ≈ 0.24 to cut background bleed.
+  //   • Saturation: blend 75% source + 25% target (accentBoost) so colour follows fibre variation.
+  //   • Luminance: max(srcL, tgtL×0.75) then + v×0.04 toward crown.
+  //   • Live preview: temporal EMA on ARGB buffer (favour new frame for motion); photo path clears buffer (sourceBmp != null).
   //   • View.alpha = intensity (global strength).
   private fun buildHairColorBitmap(
     result: ImageSegmenterResult,
     sourceBmp: Bitmap? = null,
     hairShadeColor: Int = currentShadeColor,
+    /** Live path: sample this buffer for underlying hair colour while keeping EMA (do not pass as [sourceBmp]). */
+    cameraTexture: Bitmap? = null,
   ): Bitmap? {
     val masks = result.confidenceMasks().orElse(null) ?: return null
     if (masks.isEmpty()) return null
@@ -1754,7 +1774,7 @@ private class LipRendererPlatformView(
     val tBf = Color.blue(hairShadeColor)  / 255f
     val (tgtH, tgtS, tgtL) = rgbToHSL(tRf, tGf, tBf)
 
-    val srcBmp = sourceBmp ?: rgbaBitmap
+    val srcBmp = cameraTexture ?: sourceBmp ?: rgbaBitmap
     val srcW   = srcBmp?.width  ?: 1
     val srcH   = srcBmp?.height ?: 1
 
@@ -1773,10 +1793,11 @@ private class LipRendererPlatformView(
       // Sample confidence mask at 4× step
       val mx   = min(maskW - 1, px * scale)
       val my   = min(maskH - 1, py * scale)
-      var conf = floatData[my * maskW + mx].coerceIn(0f, 1f)
+      var conf = hairMaskConf3x3(floatData, maskW, maskH, mx, my).coerceIn(0f, 1f)
 
-      conf = if (conf < 0.18f) 0f
-             else { val t = (conf - 0.18f) / 0.82f; t * t * (3f - 2f * t) }
+      val lo = 0.24f
+      conf = if (conf < lo) 0f
+             else { val t = (conf - lo) / (1f - lo); t * t * (3f - 2f * t) }
 
       val alpha = (conf * 255f).toInt().coerceIn(0, 255)
       if (alpha == 0) { pixels[i] = 0; continue }
@@ -1810,6 +1831,27 @@ private class LipRendererPlatformView(
       pixels[i] = Color.argb(alpha, pR, pG, pB)
     }
 
+    if (sourceBmp != null) {
+      lastHairColorMaskPixels = null
+    } else {
+      val prev = lastHairColorMaskPixels
+      if (prev != null && prev.size == pixels.size) {
+        val nw = 0.88f
+        val ow = 1f - nw
+        for (i in pixels.indices) {
+          val c = pixels[i]
+          val p = prev[i]
+          pixels[i] = Color.argb(
+            (Color.alpha(c) * nw + Color.alpha(p) * ow).toInt().coerceIn(0, 255),
+            (Color.red(c) * nw + Color.red(p) * ow).toInt().coerceIn(0, 255),
+            (Color.green(c) * nw + Color.green(p) * ow).toInt().coerceIn(0, 255),
+            (Color.blue(c) * nw + Color.blue(p) * ow).toInt().coerceIn(0, 255),
+          )
+        }
+      }
+      lastHairColorMaskPixels = pixels.copyOf()
+    }
+
     // Bitmap at 1/4 size; HairMaskOverlayView stretches it to full screen
     val bmp = Bitmap.createBitmap(procW, procH, Bitmap.Config.ARGB_8888)
     bmp.setPixels(pixels, 0, procW, 0, 0, procW, procH)
@@ -1821,12 +1863,28 @@ private class LipRendererPlatformView(
     return t * t * (3f - 2f * t)
   }
 
+  /** 3×3 box average on segmenter confidence (reduces blocky noise with mask scale=4). */
+  private fun hairMaskConf3x3(floatData: FloatArray, maskW: Int, maskH: Int, mx: Int, my: Int): Float {
+    var sum = 0f
+    for (dy in -1..1) {
+      for (dx in -1..1) {
+        val x = (mx + dx).coerceIn(0, maskW - 1)
+        val y = (my + dy).coerceIn(0, maskH - 1)
+        sum += floatData[y * maskW + x]
+      }
+    }
+    return sum * (1f / 9f)
+  }
+
   /// Style Match: MediaPipe hair mask + accent tint with per-shape grading (constrained to hair pixels).
   private fun buildHairStyleEffectBitmap(
     result: ImageSegmenterResult,
     sourceBmp: Bitmap? = null,
     hairShadeColor: Int = currentShadeColor,
+    cameraTexture: Bitmap? = null,
   ): Bitmap? {
+    lastHairColorMaskPixels = null
+
     val masks = result.confidenceMasks().orElse(null) ?: return null
     if (masks.isEmpty()) return null
 
@@ -1849,7 +1907,7 @@ private class LipRendererPlatformView(
     var tgtS = tgtS0
     var tgtL = tgtL0
 
-    val srcBmp = sourceBmp ?: rgbaBitmap
+    val srcBmp = cameraTexture ?: sourceBmp ?: rgbaBitmap
     val srcW = srcBmp?.width ?: 1
     val srcH = srcBmp?.height ?: 1
 
@@ -1865,11 +1923,12 @@ private class LipRendererPlatformView(
 
       val mx = min(maskW - 1, px * scale)
       val my = min(maskH - 1, py * scale)
-      var conf = floatData[my * maskW + mx].coerceIn(0f, 1f)
+      var conf = hairMaskConf3x3(floatData, maskW, maskH, mx, my).coerceIn(0f, 1f)
 
-      conf = if (conf < 0.18f) 0f
+      val lo = 0.20f
+      conf = if (conf < lo) 0f
       else {
-        val t = (conf - 0.18f) / 0.82f
+        val t = (conf - lo) / (1f - lo)
         t * t * (3f - 2f * t)
       }
 
