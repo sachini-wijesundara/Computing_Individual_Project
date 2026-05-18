@@ -930,8 +930,12 @@ private class NativeLipRendererView: NSObject, FlutterPlatformView, FlutterStrea
         self?.previewLayer?.frame = bounds
         self?.lipOverlayLayer.frame = bounds
         self?.makeupStackParent.frame = bounds
-        for sl in self?.makeupSlotLayers ?? [] {
-          sl.frame = CGRect(origin: .zero, size: bounds.size)
+        if self?.usesMakeupLookStack == true, !(self?.makeupLookStack.isEmpty ?? true) {
+          self?.layoutMakeupSlotLayersForStack()
+        } else {
+          for sl in self?.makeupSlotLayers ?? [] {
+            sl.frame = CGRect(origin: .zero, size: bounds.size)
+          }
         }
         self?.hairSideLayer.frame = bounds
         self?.hairMaskLayer.frame = bounds
@@ -1827,6 +1831,10 @@ private class NativeLipRendererView: NSObject, FlutterPlatformView, FlutterStrea
 
         // ── ALL MAKEUP MODES ─────────────────────────────────────────────────
         } else {
+          if let pb = CMSampleBufferGetImageBuffer(sampleBuffer) {
+            lastCaptureBufferWidth = CGFloat(CVPixelBufferGetWidth(pb))
+            lastCaptureBufferHeight = CGFloat(CVPixelBufferGetHeight(pb))
+          }
           if let landmarker = faceLandmarker {
             let lmResult = try landmarker.detect(videoFrame: image, timestampInMilliseconds: timestampMs)
             DispatchQueue.main.async { [weak self] in
@@ -1874,7 +1882,9 @@ private class NativeLipRendererView: NSObject, FlutterPlatformView, FlutterStrea
     if viewW < 2 || viewH < 2 { return .zero }
     let bw = lastCaptureBufferWidth > 8 ? lastCaptureBufferWidth : 720
     let bh = lastCaptureBufferHeight > 8 ? lastCaptureBufferHeight : 1280
-    return NailPolishRenderer.aspectFillNormToView(nx: nx, ny: ny, bufferWidth: bw, bufferHeight: bh, viewWidth: viewW, viewHeight: viewH)
+    // MediaPipe runs on the unmirrored buffer; front preview is mirrored — match previewLayer.
+    let mx = hairFlipToMatchMirroredPreview ? (1 - nx) : nx
+    return NailPolishRenderer.aspectFillNormToView(nx: mx, ny: ny, bufferWidth: bw, bufferHeight: bh, viewWidth: viewW, viewHeight: viewH)
   }
 
   private func drawNailOverlays(result: HandLandmarkerResult?) {
@@ -2833,28 +2843,7 @@ private class NativeLipRendererView: NSObject, FlutterPlatformView, FlutterStrea
 
     func point(for index: Int) -> CGPoint {
         let lm = landmarks[index]
-        let viewW = container.bounds.width
-        let viewH = container.bounds.height
-        if viewW == 0 || viewH == 0 { return .zero }
-        
-        let viewAspect = viewW / viewH
-        let bufferAspect: CGFloat = 720.0 / 1280.0
-        
-        if viewAspect > bufferAspect {
-            let scaledH = viewW / bufferAspect
-            let yOffset = -(scaledH - viewH) / 2.0
-            return CGPoint(
-                x: CGFloat(lm.x) * viewW,
-                y: CGFloat(lm.y) * scaledH + yOffset
-            )
-        } else {
-            let scaledW = viewH * bufferAspect
-            let xOffset = -(scaledW - viewW) / 2.0
-            return CGPoint(
-                x: CGFloat(lm.x) * scaledW + xOffset,
-                y: CGFloat(lm.y) * viewH
-            )
-        }
+        return landmarkNormToView(nx: CGFloat(lm.x), ny: CGFloat(lm.y))
     }
 
     func addPolygon(indices: [Int], to path: UIBezierPath, close: Bool = true) {
@@ -3376,16 +3365,14 @@ private class NativeLipRendererView: NSObject, FlutterPlatformView, FlutterStrea
         lipOverlayLayer.opacity = 0
         lipOverlayLayer.path = nil
         lipOverlayLayer.mask = nil
-        makeupStackParent.frame = CGRect(origin: .zero, size: container.bounds.size)
-        if isCompareMode {
-            let mask = CAShapeLayer()
+        makeupStackParent.mask = nil
+        layoutMakeupSlotLayersForStack()
+        let compareMaskPath: CGPath? = {
+            guard isCompareMode else { return nil }
             let splitX = container.bounds.width * currentSplitPosition
             let maskRect = CGRect(x: splitX, y: 0, width: container.bounds.width - splitX, height: container.bounds.height)
-            mask.path = UIBezierPath(rect: maskRect).cgPath
-            makeupStackParent.mask = mask
-        } else {
-            makeupStackParent.mask = nil
-        }
+            return UIBezierPath(rect: maskRect).cgPath
+        }()
         for i in 0..<makeupSlotLayers.count {
             if i < makeupLookStack.count {
                 let e = makeupLookStack[i]
@@ -3396,13 +3383,24 @@ private class NativeLipRendererView: NSObject, FlutterPlatformView, FlutterStrea
                 if fillMakeupPathForCurrentCategory(slotPath) {
                     makeupSlotLayers[i].opacity = 0
                     makeupSlotLayers[i].path = nil
+                    makeupSlotLayers[i].mask = nil
+                    makeupSlotLayers[i].compositingFilter = nil
                     continue
                 }
                 self.copyFacePaint(from: lipOverlayLayer, to: makeupSlotLayers[i])
                 makeupSlotLayers[i].opacity = 1
+                if let compareMaskPath {
+                    let slotMask = CAShapeLayer()
+                    slotMask.path = compareMaskPath
+                    makeupSlotLayers[i].mask = slotMask
+                } else {
+                    makeupSlotLayers[i].mask = nil
+                }
             } else {
                 makeupSlotLayers[i].opacity = 0
                 makeupSlotLayers[i].path = nil
+                makeupSlotLayers[i].mask = nil
+                makeupSlotLayers[i].compositingFilter = nil
             }
         }
         let catHair = currentCategory.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
@@ -3464,6 +3462,34 @@ private class NativeLipRendererView: NSObject, FlutterPlatformView, FlutterStrea
     dst.shadowOpacity = src.shadowOpacity
     dst.shadowRadius = src.shadowRadius
     dst.shadowOffset = src.shadowOffset
+  }
+
+  /// Full-makeup `setLook` slots must sit directly above the camera preview (siblings), not only
+  /// inside `makeupStackParent`. Otherwise blush `colorBlendMode` blends with foundation layers
+  /// instead of live pixels — same quality as single-product `setEffect` on `lipOverlayLayer`.
+  private func layoutMakeupSlotLayersForStack() {
+    let size = container.bounds.size
+    guard size.width > 1, size.height > 1 else { return }
+    let frame = CGRect(origin: .zero, size: size)
+    let subs = container.layer.sublayers
+    for (i, sl) in makeupSlotLayers.enumerated() {
+      var misplaced = sl.superlayer != container.layer
+      if !misplaced, let preview = previewLayer, let subs,
+         let pi = subs.firstIndex(of: preview), let si = subs.firstIndex(of: sl) {
+        misplaced = si <= pi
+      }
+      if misplaced {
+        sl.removeFromSuperlayer()
+        if let preview = previewLayer {
+          container.layer.insertSublayer(sl, above: preview)
+        } else {
+          container.layer.insertSublayer(sl, below: lipOverlayLayer)
+        }
+      }
+      sl.frame = frame
+      sl.zPosition = 40 + CGFloat(i)
+    }
+    lipOverlayLayer.zPosition = 120
   }
 
   /// Normalize EXIF orientation so selfie landmarks/rendering align to actual pixels.
