@@ -7,8 +7,10 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
 
 import '../models/product.dart';
+import '../providers/cart_provider.dart';
 import '../utils/price_format.dart';
 import '../services/firebase_auth_service.dart';
 import '../services/firestore_service.dart';
@@ -1736,10 +1738,21 @@ class _HeroCard extends StatelessWidget {
                       ),
                     ),
                   ),
-                  onRight: () => FirestoreDb.instance.addToCart(
-                    FirebaseAuth.instance.currentUser!.uid,
-                    item,
-                  ),
+                  onRight: () {
+                    Provider.of<CartProvider>(context, listen: false)
+                        .addToCart(item);
+                    final uid = FirebaseAuth.instance.currentUser?.uid;
+                    if (uid != null) {
+                      FirestoreDb.instance.addToCart(uid, item);
+                    }
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(
+                        content: Text('${item.name} added to cart'),
+                        backgroundColor: const Color(0xFF1F8A43),
+                        behavior: SnackBarBehavior.floating,
+                      ),
+                    );
+                  },
                   width: 210,
                 ),
               ]),

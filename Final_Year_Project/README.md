@@ -22,6 +22,7 @@ If an **IDE or agent status panel** shows `OPENROUTER_API_KEY` / `OPENROUTER_MOD
 2. Edit `.env` and set:
    - **`GEMINI_API_KEY`** — from [Google AI Studio](https://aistudio.google.com/app/apikey) (Lumi chat + Skin & Hair vision in `TFLiteAnalysisService` / `GeminiChatService`).
    - **`OPENROUTER_API_KEY`** — from [OpenRouter](https://openrouter.ai/keys) (Hair **Style Match** screen only).
+
 3. **Option A — IDE / plain `flutter run`:** keep keys in **`.env`** next to `pubspec.yaml` (same variables as above). It is declared as a Flutter **asset**, so it is copied into the app when you build; **stop and run `flutter run` again** after editing. If the file is missing, run `cp .env.example .env` first or the build can fail on the missing asset.
 4. **Optional fallbacks:** `assets/env/local_keys.env` (tracked, empty defaults) is merged after `.env` for keys you only set there. **`--dart-define`** overrides both when set.
 5. **Option B — shell / CI:** use `--dart-define` so keys never sit in tracked files, e.g.:

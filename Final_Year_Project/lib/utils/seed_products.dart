@@ -1291,6 +1291,37 @@ List<Map<String, dynamic>> _buildFaceAssetProducts() {
   }).toList();
 }
 
+String _normalizeShadeCatalogKey(String name) =>
+    name.trim().toLowerCase().replaceAll(RegExp(r'\s+'), ' ');
+
+/// Every `{name, hex}` shade from the built-in product catalogue (admin autocomplete).
+List<Map<String, String>> get catalogShadePresets {
+  final byKey = <String, Map<String, String>>{};
+  void ingest(dynamic shades) {
+    if (shades is! List) return;
+    for (final raw in shades) {
+      if (raw is! Map) continue;
+      final name = (raw['name'] ?? '').toString().trim();
+      var hex = (raw['hex'] ?? '').toString().trim().toUpperCase();
+      if (name.isEmpty || hex.isEmpty) continue;
+      if (!hex.startsWith('#')) hex = '#$hex';
+      final key = _normalizeShadeCatalogKey(name);
+      byKey.putIfAbsent(key, () => {'name': name, 'hex': hex});
+    }
+  }
+
+  for (final p in _products) {
+    ingest(p['shades']);
+  }
+  for (final p in _buildFaceAssetProducts()) {
+    ingest(p['shades']);
+  }
+
+  final list = byKey.values.toList();
+  list.sort((a, b) => (a['name'] ?? '').compareTo(b['name'] ?? ''));
+  return list;
+}
+
 /// Seeds missing products to Firestore AND updates existing ones.
 /// Also removes any legacy IDs that have been superseded. Safe to call every app launch.
 Future<void> seedAllProductsOnce() async {

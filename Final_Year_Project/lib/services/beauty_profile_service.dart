@@ -62,11 +62,14 @@ class BeautyProfileService {
     return out;
   }
 
-  /// Call after a successful [analyzeSkin] + [analyzeHair] pass. No-op if logged out.
+  /// Call after a successful beauty analysis pass. No-op if logged out.
+  /// When [replaceEntireProfile] is true (new photo upload), skin and hair both come from
+  /// that scan — avoids keeping person A's skin when person B's hair was analyzed later.
   /// Returns the merged profile map (in-memory) so callers can refresh Gemini context.
   Future<Map<String, dynamic>?> saveAfterAnalysis({
     required SkinToneResult skin,
     required HairResult hair,
+    bool replaceEntireProfile = false,
   }) async {
     final uid = FirebaseAuth.instance.currentUser?.uid;
     if (uid == null) return null;
@@ -92,7 +95,9 @@ class BeautyProfileService {
         ? Map<String, dynamic>.from(data!['beautyProfile'] as Map)
         : null;
 
-    final merged = _merge(existing, incoming);
+    final merged = replaceEntireProfile || existing == null || existing.isEmpty
+        ? Map<String, dynamic>.from(incoming)
+        : _merge(existing, incoming);
     final tone = merged['skinTone'] as String? ?? skin.skinTone;
     final under = merged['undertone'] as String? ?? skin.undertone;
     final lip = BeautyProfileShades.lipPrimaryForProfile(tone, under);

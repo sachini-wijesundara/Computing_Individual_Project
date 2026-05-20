@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import 'firebase/firebase_config.dart';
 import 'screens/admin/admin_gate_screen.dart';
+import 'utils/admin_shade_color_registry.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -12,6 +13,10 @@ Future<void> main() async {
     debugPrint('⚠️ Firebase init error (admin web): $e');
     debugPrint('$st');
   }
+  await AdminShadeColorRegistry.ensureLoaded();
+  debugPrint(
+    '✅ Color names loaded (${AdminShadeColorRegistry.namedColorCount} lookups)',
+  );
   runApp(const _AdminWebApp());
 }
 

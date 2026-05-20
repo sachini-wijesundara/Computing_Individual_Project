@@ -80,8 +80,7 @@ class TFLiteAnalysisService {
   /// Models that work for new Google AI Studio keys (avoid `gemini-2.0-flash` / `gemini-1.0-pro-vision`).
   static const _visionModels = [
     'gemini-2.5-flash',
-    'gemini-1.5-flash',
-    'gemini-1.5-pro',
+    'gemini-2.0-flash',
   ];
 
   static const Duration _visionTimeout = Duration(seconds: 70);
@@ -98,9 +97,25 @@ class TFLiteAnalysisService {
   String? _visionCacheKey;
   Map<String, dynamic>? _visionCache;
 
+  /// Stronger than [List.hashCode] alone — reduces wrong cache hits between different photos.
   Future<String> _visionCacheKeyFor(XFile f) async {
     final bytes = await f.readAsBytes();
-    return '${f.path}:${bytes.length}:${bytes.hashCode}';
+    var sampleHash = 17;
+    if (bytes.isNotEmpty) {
+      for (var i = 0; i < bytes.length; i += 512) {
+        sampleHash = 0x1fffffff & (sampleHash * 31 + bytes[i]);
+      }
+      final last = bytes.length - 1;
+      sampleHash = 0x1fffffff &
+          (sampleHash * 31 + bytes.first + bytes[last] + (bytes.length >> 8));
+    }
+    return '${f.path}|${bytes.length}|$sampleHash';
+  }
+
+  /// Call before a new photo so an old Gemini result is never reused for a different person.
+  void clearVisionCache() {
+    _visionCacheKey = null;
+    _visionCache = null;
   }
 
   static String? _extractJsonObject(String raw) {
@@ -240,6 +255,167 @@ class TFLiteAnalysisService {
     return List<double>.generate(length, (i) => (row[i] as num).toDouble());
   }
 
+  /// Average RGB in a 224×224 crop (coordinates match pixel-analysis hair bands).
+  ({double r, double g, double b, double lum}) _avgRegion224(
+    img.Image resized,
+    int x0,
+    int y0,
+    int x1,
+    int y1,
+  ) {
+    x0 = x0.clamp(0, 223);
+    y0 = y0.clamp(0, 223);
+    x1 = x1.clamp(1, 224);
+    y1 = y1.clamp(1, 224);
+    double rSum = 0, gSum = 0, bSum = 0;
+    var count = 0;
+    for (var y = y0; y < y1; y++) {
+      for (var x = x0; x < x1; x++) {
+        final p = resized.getPixel(x, y);
+        rSum += p.r.toDouble();
+        gSum += p.g.toDouble();
+        bSum += p.b.toDouble();
+        count++;
+      }
+    }
+    final r = rSum / count;
+    final g = gSum / count;
+    final b = bSum / count;
+    final lum = 0.299 * r + 0.587 * g + 0.114 * b;
+    return (r: r, g: g, b: b, lum: lum);
+  }
+
+  ({double lum, double rgRatio, double rbRatio}) _hairBandStats224(img.Image resized224) {
+    // Front selfies: top band; back-of-head / hair fills frame: centre band too.
+    final regions = [
+      _avgRegion224(resized224, 26, 22, 198, 61),
+      _avgRegion224(resized224, 9, 44, 70, 114),
+      _avgRegion224(resized224, 154, 44, 215, 114),
+      _avgRegion224(resized224, 34, 56, 190, 157),
+    ];
+    var hR = 0.0, hG = 0.0, hB = 0.0;
+    for (final r in regions) {
+      hR += r.r;
+      hG += r.g;
+      hB += r.b;
+    }
+    hR /= regions.length;
+    hG /= regions.length;
+    hB /= regions.length;
+    final hLum = 0.299 * hR + 0.587 * hG + 0.114 * hB;
+    return (
+      lum: hLum,
+      rgRatio: hR / (hG + 1e-6),
+      rbRatio: hR / (hB + 1e-6),
+    );
+  }
+
+  /// Burgundy, wine-red, auburn — including darker reds (lum can be under ~110).
+  bool _isReddishHairBand(({double lum, double rgRatio, double rbRatio}) stats) {
+    return stats.rgRatio >= 1.26 &&
+        stats.rbRatio >= 1.10 &&
+        stats.lum >= 28 &&
+        stats.lum <= 145;
+  }
+
+  /// Same rules as pixel fallback — tuned for brown vs burgundy/red.
+  String _pixelHairColorFrom224(img.Image resized224) {
+    final stats = _hairBandStats224(resized224);
+    if (_isReddishHairBand(stats)) return 'Red';
+
+    final hLum = stats.lum;
+    if (hLum < 60) return 'Black';
+    if (hLum < 110) return 'Brown';
+    if (hLum < 150) return 'Brown';
+    if (hLum < 200) return 'Blonde';
+    return 'Grey';
+  }
+
+  static bool _isDegenerateTfliteColorScores(List<double> colorScores) {
+    if (colorScores.isEmpty) return false;
+    final max = colorScores.reduce(math.max);
+    final nonZero = colorScores.where((s) => s > 0.02).length;
+    return max >= 0.98 && nonZero <= 1;
+  }
+
+  /// Edge density in the hair region → texture type (Curly/Coily vs Wavy).
+  String _pixelHairTypeFrom224(img.Image resized224) {
+    double edgeSumH = 0, edgeSumV = 0;
+    var edgeCount = 0;
+    for (var y = 28; y < 175; y++) {
+      for (var x = 28; x < 196; x++) {
+        final cur = resized224.getPixel(x, y);
+        final curL = 0.299 * cur.r + 0.587 * cur.g + 0.114 * cur.b;
+        final pH = resized224.getPixel(x - 1, y);
+        final pHL = 0.299 * pH.r + 0.587 * pH.g + 0.114 * pH.b;
+        edgeSumH += (curL - pHL).abs();
+        if (y > 28) {
+          final pV = resized224.getPixel(x, y - 1);
+          final pVL = 0.299 * pV.r + 0.587 * pV.g + 0.114 * pV.b;
+          edgeSumV += (curL - pVL).abs();
+        }
+        edgeCount++;
+      }
+    }
+    final edge = (edgeSumH + edgeSumV) / (edgeCount * 2);
+    if (edge < 6) return 'Straight';
+    if (edge < 11) return 'Wavy';
+    if (edge < 17) return 'Curly';
+    return 'Coily';
+  }
+
+  String _refineTfliteHairType(String predicted, img.Image resized224) {
+    const order = ['Straight', 'Wavy', 'Curly', 'Coily'];
+    final pixelType = _pixelHairTypeFrom224(resized224);
+    final predIdx = order.indexOf(predicted);
+    final pixelIdx = order.indexOf(pixelType);
+    if (predIdx < 0 || pixelIdx < 0) return predicted;
+    if (pixelIdx > predIdx) {
+      debugPrint('🔧 TFLite hair type: $predicted → $pixelType (texture edges)');
+      return pixelType;
+    }
+    return predicted;
+  }
+
+  /// Balance demo-model fixes (brown≠red) with real burgundy/curly-red photos.
+  String _refineTfliteHairColor({
+    required String predicted,
+    required List<double> colorScores,
+    required List<String> labels,
+    required img.Image resized224,
+  }) {
+    final stats = _hairBandStats224(resized224);
+    final pixelColor = _pixelHairColorFrom224(resized224);
+    final reddish = _isReddishHairBand(stats);
+    debugPrint(
+      'Hair band: lum=${stats.lum.toStringAsFixed(1)}, R/G=${stats.rgRatio.toStringAsFixed(2)}, '
+      'R/B=${stats.rbRatio.toStringAsFixed(2)}, reddish=$reddish, pixel=$pixelColor, '
+      'tflite=$predicted',
+    );
+
+    if (reddish && (predicted == 'Brown' || predicted == 'Black')) {
+      debugPrint('🔧 TFLite hair color: $predicted → Red (burgundy/wine-red band)');
+      return 'Red';
+    }
+
+    if (predicted != 'Red') return predicted;
+
+    // Keep true red hair even when the bundled model always outputs Red=1.0.
+    if (reddish) return 'Red';
+
+    if (_isDegenerateTfliteColorScores(colorScores) && pixelColor != 'Red') {
+      debugPrint('🔧 TFLite hair color: Red → $pixelColor (degenerate model, not reddish)');
+      return pixelColor;
+    }
+
+    if (pixelColor != 'Red') {
+      debugPrint('🔧 TFLite hair color: Red → $pixelColor (pixel hair band)');
+      return pixelColor;
+    }
+
+    return predicted;
+  }
+
   Future<Map<String, dynamic>?> _tfliteAnalyzeHair(XFile imageFile) async {
     if (!_tfliteReady || _hairTypeInterpreter == null || _hairColorInterpreter == null) {
       return null;
@@ -280,22 +456,44 @@ class TFLiteAnalysisService {
       _hairTypeInterpreter!.run(input, typeOutput);
       final typeScores = _scoresFromOutput(typeOutput, typeN);
       final typeIdx    = typeScores.indexOf(typeScores.reduce(math.max));
-      final hairType   = typeIdx < _hairTypeLabels.length ? _hairTypeLabels[typeIdx] : 'Wavy';
+      var hairType     = typeIdx < _hairTypeLabels.length ? _hairTypeLabels[typeIdx] : 'Wavy';
+      hairType = _refineTfliteHairType(hairType, resized);
 
       final colorOutput = _allocOutputForTensor(colorOutTensor);
       _hairColorInterpreter!.run(input, colorOutput);
       final colorScores = _scoresFromOutput(colorOutput, colorN);
       final colorIdx    = colorScores.indexOf(colorScores.reduce(math.max));
-      final hairColor   = colorIdx < _hairColorLabels.length ? _hairColorLabels[colorIdx] : 'Brown';
+      var hairColor     = colorIdx < _hairColorLabels.length ? _hairColorLabels[colorIdx] : 'Brown';
+      hairColor = _refineTfliteHairColor(
+        predicted: hairColor,
+        colorScores: colorScores,
+        labels: _hairColorLabels,
+        resized224: resized,
+      );
+      final refinedColorIdx = _hairColorLabels.indexOf(hairColor);
 
-      final confidence = (typeScores[typeIdx] + colorScores[colorIdx]) / 2.0;
-      debugPrint('✅ TFLite hair: type=$hairType (${typeScores[typeIdx].toStringAsFixed(2)}), color=$hairColor (${colorScores[colorIdx].toStringAsFixed(2)})');
+      final confidence = (typeScores[typeIdx] + colorScores[refinedColorIdx >= 0 ? refinedColorIdx : colorIdx]) / 2.0;
+      final scoreLine = _hairColorLabels
+          .asMap()
+          .entries
+          .map((e) => '${e.value}=${colorScores[e.key].toStringAsFixed(3)}')
+          .join(', ');
+      debugPrint('TFLite color scores: $scoreLine');
+      debugPrint('✅ TFLite hair: type=$hairType (${typeScores[typeIdx].toStringAsFixed(2)}), color=$hairColor (${colorScores[refinedColorIdx >= 0 ? refinedColorIdx : colorIdx].toStringAsFixed(2)})');
+
+      final typeChanged = hairType != _hairTypeLabels[typeIdx];
+      final colorChanged = hairColor != _hairColorLabels[colorIdx];
+      final colorConfidence = (!colorChanged && !typeChanged)
+          ? confidence
+          : 0.82;
 
       return {
         'hair_type':  hairType,
         'hair_color': hairColor,
-        'confidence': confidence.clamp(0.65, 0.95),
-        'inference_mode': 'tflite_ondevice',
+        'confidence': colorConfidence.clamp(0.65, 0.95),
+        'inference_mode': (!colorChanged && !typeChanged)
+            ? 'tflite_ondevice'
+            : 'tflite_ondevice+pixel_hair',
       };
     } catch (e) {
       debugPrint('⚠️ TFLite hair inference error: $e');
@@ -468,15 +666,22 @@ Reply ONLY in valid JSON:
       final hB = (hairTop.b + hairLeft.b + hairRight.b) / 3;
       final hLum = 0.299 * hR + 0.587 * hG + 0.114 * hB;
 
+      final hRg = hR / (hG + 1e-6);
+      final hRb = hR / (hB + 1e-6);
       String hairColor;
-      if      (hLum < 60)  hairColor = 'Black';
-      else if (hLum < 110) hairColor = 'Brown';
-      else if (hLum < 150) {
-        // Auburn vs Brown: auburn has higher R/G ratio
-        hairColor = (hR / (hG + 1e-6) > 1.3) ? 'Auburn' : 'Brown';
+      if (hRg >= 1.26 && hRb >= 1.10 && hLum >= 28 && hLum <= 145) {
+        hairColor = 'Red';
+      } else if (hLum < 60) {
+        hairColor = 'Black';
+      } else if (hLum < 110) {
+        hairColor = 'Brown';
+      } else if (hLum < 150) {
+        hairColor = (hRg > 1.3) ? 'Auburn' : 'Brown';
+      } else if (hLum < 200) {
+        hairColor = 'Blonde';
+      } else {
+        hairColor = 'Grey';
       }
-      else if (hLum < 200) hairColor = 'Blonde';
-      else                 hairColor = 'Grey';
 
       // Hair type via multi-direction edge variance for robustness
       double edgeSumH = 0, edgeSumV = 0;
@@ -526,21 +731,49 @@ Reply ONLY in valid JSON:
 
   // ── Public API ────────────────────────────────────────────────────────────
 
-  Future<SkinToneResult> analyzeSkin(XFile imageFile) async {
-    // 1) Gemini Vision (most accurate — actually sees the image)
+  SkinToneResult _skinToneResultFromVision(Map<String, dynamic> vision) {
+    final s = _visionString(vision['skin_tone']) ?? 'Medium';
+    final u = _visionString(vision['undertone']) ?? 'Neutral';
+    return SkinToneResult(
+      skinTone: s,
+      undertone: u,
+      confidence: (vision['confidence'] as num?)?.toDouble() ?? 0.90,
+      inferenceMode: 'gemini_vision',
+      makeupRecommendations: _skinMakeupRecs(s, u),
+    );
+  }
+
+  HairResult _hairResultFromVision(Map<String, dynamic> vision) {
+    final t = _visionString(vision['hair_type']) ?? 'Wavy';
+    final c = _visionString(vision['hair_color']) ?? 'Brown';
+    return HairResult(
+      hairType: t,
+      hairColor: c,
+      confidence: (vision['confidence'] as num?)?.toDouble() ?? 0.90,
+      inferenceMode: 'gemini_vision',
+      careTips: _hairCareTips(t),
+      productRecommendations: _hairProductRecs(t, c),
+      recommendedStyles: _coerceRecommendedStyles(vision['recommended_styles']),
+    );
+  }
+
+  /// One photo → one vision pass → skin + hair always from the **same** image.
+  Future<({SkinToneResult skin, HairResult hair})> analyzeBeauty(XFile imageFile) async {
+    clearVisionCache();
     final vision = await _geminiVisionAnalyze(imageFile);
     if (vision != null) {
-      final s = _visionString(vision['skin_tone']) ?? 'Medium';
-      final u = _visionString(vision['undertone']) ?? 'Neutral';
-      return SkinToneResult(
-        skinTone: s, undertone: u,
-        confidence: (vision['confidence'] as num?)?.toDouble() ?? 0.90,
-        inferenceMode: 'gemini_vision',
-        makeupRecommendations: _skinMakeupRecs(s, u),
+      return (
+        skin: _skinToneResultFromVision(vision),
+        hair: _hairResultFromVision(vision),
       );
     }
+    final skin = await _analyzeSkinWithoutVision(imageFile);
+    final hair = await _analyzeHairWithoutVision(imageFile);
+    return (skin: skin, hair: hair);
+  }
 
-    // 2) Remote server (Flask — only if /health succeeds; avoids connection refused noise)
+  Future<SkinToneResult> _analyzeSkinWithoutVision(XFile imageFile) async {
+    // Remote server (Flask — only if /health succeeds; avoids connection refused noise)
     try {
       if (await _aiChatService.isServerAvailable()) {
         final apiResult = await _aiChatService.analyzeSkinRemote(imageFile);
@@ -569,31 +802,28 @@ Reply ONLY in valid JSON:
     );
   }
 
-  Future<HairResult> analyzeHair(XFile imageFile) async {
-    // 1) Gemini Vision (most accurate — sees the actual image)
+  Future<SkinToneResult> analyzeSkin(XFile imageFile) async {
+    clearVisionCache();
     final vision = await _geminiVisionAnalyze(imageFile);
     if (vision != null) {
-      final t = _visionString(vision['hair_type']) ?? 'Wavy';
-      final c = _visionString(vision['hair_color']) ?? 'Brown';
-      return HairResult(
-        hairType: t, hairColor: c,
-        confidence: (vision['confidence'] as num?)?.toDouble() ?? 0.90,
-        inferenceMode: 'gemini_vision',
-        careTips: _hairCareTips(t),
-        productRecommendations: _hairProductRecs(t, c),
-        recommendedStyles: _coerceRecommendedStyles(vision['recommended_styles']),
-      );
+      return _skinToneResultFromVision(vision);
     }
+    return _analyzeSkinWithoutVision(imageFile);
+  }
 
-    // 2) On-device TFLite classifiers (offline-capable)
+  Future<HairResult> _analyzeHairWithoutVision(XFile imageFile) async {
+    // On-device TFLite classifiers (offline-capable)
     final tflite = await _tfliteAnalyzeHair(imageFile);
     if (tflite != null) {
       final t = (tflite['hair_type'] as String?) ?? 'Wavy';
-      final c = (tflite['hair_color'] as String?) ?? 'Brown';
+      var c = (tflite['hair_color'] as String?) ?? 'Brown';
+      var mode = (tflite['inference_mode'] as String?) ?? 'tflite_ondevice';
+      var conf = (tflite['confidence'] as num?)?.toDouble() ?? 0.80;
+
       return HairResult(
         hairType: t, hairColor: c,
-        confidence: (tflite['confidence'] as num?)?.toDouble() ?? 0.80,
-        inferenceMode: 'tflite_ondevice',
+        confidence: conf,
+        inferenceMode: mode,
         careTips: _hairCareTips(t),
         productRecommendations: _hairProductRecs(t, c),
         recommendedStyles: [], // TFLite fallback doesn't do style matching yet
@@ -631,6 +861,14 @@ Reply ONLY in valid JSON:
       productRecommendations: _hairProductRecs(t, c),
       recommendedStyles: [],
     );
+  }
+
+  Future<HairResult> analyzeHair(XFile imageFile) async {
+    final vision = await _geminiVisionAnalyze(imageFile);
+    if (vision != null) {
+      return _hairResultFromVision(vision);
+    }
+    return _analyzeHairWithoutVision(imageFile);
   }
 
   Future<MakeupResult> analyzeMakeup(XFile imageFile) async {

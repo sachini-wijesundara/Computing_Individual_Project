@@ -3,12 +3,14 @@ import 'package:camera/camera.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
 import 'dart:async';
 import 'dart:io';
 import '../native_lip_renderer.dart';
 import 'selfie_capture_screen.dart';
 
 import '../models/product.dart';
+import '../providers/cart_provider.dart';
 import '../widgets/live_tryon_widgets.dart';
 import '../services/firestore_service.dart';
 import '../services/tryon_activity_service.dart';
@@ -464,9 +466,7 @@ class _LiveTryOnScreenState extends State<LiveTryOnScreen> {
       if (sub == 'blush')              return 'cmd_blush';
       if (sub == 'highlighter')        return 'cmd_highlight';
       if (sub == 'contour & bronzer')  return 'cmd_highlight';
-      // Use cmd_face (full-face mask) like full_makeup_screen — cmd_concealer’s multi-polygon
-      // path overlaps under-eye + nose regions and evenOdd fill cancels overlap → “not applying”.
-      if (sub == 'concealer')          return 'cmd_face';
+      if (sub == 'concealer')          return 'cmd_concealer';
       // foundation / powder → generic face overlay
       return 'cmd_face';
     }
@@ -481,7 +481,7 @@ class _LiveTryOnScreenState extends State<LiveTryOnScreen> {
       if (image.contains('/blush/'))            return 'cmd_blush';
       if (image.contains('/highlighter/'))      return 'cmd_highlight';
       if (image.contains('/contour_bronzer/'))  return 'cmd_highlight';
-      if (image.contains('/concealer/'))        return 'cmd_face';
+      if (image.contains('/concealer/'))        return 'cmd_concealer';
       return 'cmd_face';
     }
 
@@ -499,7 +499,7 @@ class _LiveTryOnScreenState extends State<LiveTryOnScreen> {
     if (hasAny(['blush', 'rouge']))                             return 'cmd_blush';
     if (hasAny(['highlighter', 'illuminator', 'glow']))         return 'cmd_highlight';
     if (hasAny(['bronzer', 'contour', 'sculpt']))               return 'cmd_highlight';
-    if (hasAny(['concealer']))                                   return 'cmd_face';
+    if (hasAny(['concealer']))                                   return 'cmd_concealer';
     if (hasAny(['foundation', 'face powder', 'compact']))        return 'cmd_face';
 
     return 'cmd_lipstick';
@@ -666,24 +666,49 @@ class _LiveTryOnScreenState extends State<LiveTryOnScreen> {
 
   Future<void> _addCurrentProductToCart() async {
     if (_addingToCart) return;
-    final product = _activeProduct;
-    final user = FirebaseAuth.instance.currentUser;
+
+    var product = _activeProduct;
+    if (product == null) {
+      final id = (widget.productId ?? _routeArgs?['productId'] ?? '')
+          .toString()
+          .trim();
+      if (id.isNotEmpty) {
+        product = await FirestoreDb.instance.getProduct(id);
+        if (product != null && mounted) {
+          setState(() => _activeProduct = product);
+        }
+      }
+    }
     if (product == null) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Product not ready yet.')),
+        const SnackBar(content: Text('Product not ready yet. Try again in a moment.')),
       );
       return;
     }
-    if (user == null) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Please sign in to add items to cart.')),
+
+    ProductShade? selectedShade;
+    final shades = _effectiveShades;
+    if (shades.isNotEmpty) {
+      final idx = _selectedShadeIndex.clamp(0, shades.length - 1);
+      selectedShade = ProductShade(
+        name: shades[idx]['name'] ?? _selectedShadeName,
       );
-      return;
     }
+
+    // Cart screen reads CartProvider — same as product detail page.
+    Provider.of<CartProvider>(context, listen: false)
+        .addToCart(product, shade: selectedShade);
+
+    final user = FirebaseAuth.instance.currentUser;
     setState(() => _addingToCart = true);
-    await FirestoreDb.instance.addToCart(user.uid, product);
+    if (user != null) {
+      try {
+        await FirestoreDb.instance.addToCart(user.uid, product);
+      } catch (e, st) {
+        debugPrint('Firestore addToCart: $e\n$st');
+      }
+    }
     if (!mounted) return;
     setState(() => _addingToCart = false);
     ScaffoldMessenger.of(context).showSnackBar(
