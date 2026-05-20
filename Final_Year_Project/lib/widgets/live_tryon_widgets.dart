@@ -27,54 +27,64 @@ class Hud extends StatelessWidget {
     required this.fps,
     required this.frames,
     required this.det,
+    this.compact = false,
   });
 
   final bool   ready;
   final double fps;
   final int    frames;
   final int    det;
+  /// When true, only shows READY/DETECTING (no fps line) — fits narrow top bars.
+  final bool compact;
 
   @override
   Widget build(BuildContext context) {
+    final statusRow = Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Container(
+          width: 8,
+          height: 8,
+          decoration: BoxDecoration(
+            color: ready ? Colors.greenAccent : Colors.redAccent,
+            shape: BoxShape.circle,
+          ),
+        ),
+        const SizedBox(width: 6),
+        Text(
+          ready ? 'READY' : 'DETECTING…',
+          style: const TextStyle(
+            color: Colors.white,
+            fontSize: 11,
+            fontWeight: FontWeight.w600,
+            letterSpacing: 0.5,
+          ),
+        ),
+      ],
+    );
+
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      constraints: const BoxConstraints(minHeight: 28, maxHeight: 36),
       decoration: BoxDecoration(
         color: Colors.black.withValues(alpha: 0.55),
-        borderRadius: BorderRadius.circular(10),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: Colors.white.withValues(alpha: 0.12)),
       ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Container(
-                width: 8, height: 8,
-                decoration: BoxDecoration(
-                  color: ready ? Colors.greenAccent : Colors.redAccent,
-                  shape: BoxShape.circle,
+      child: (compact || fps <= 0)
+          ? statusRow
+          : Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                statusRow,
+                const SizedBox(height: 2),
+                Text(
+                  '${fps.toStringAsFixed(1)} fps  |  $det det',
+                  style: const TextStyle(color: Colors.white70, fontSize: 10),
                 ),
-              ),
-              const SizedBox(width: 6),
-              Text(
-                ready ? 'READY' : 'DETECTING…',
-                style: const TextStyle(
-                  color: Colors.white, fontSize: 11,
-                  fontWeight: FontWeight.w600, letterSpacing: 0.5,
-                ),
-              ),
-            ],
-          ),
-          if (fps > 0) ...[
-            const SizedBox(height: 2),
-            Text(
-              '${fps.toStringAsFixed(1)} fps  |  $det det',
-              style: const TextStyle(color: Colors.white70, fontSize: 10),
+              ],
             ),
-          ],
-        ],
-      ),
     );
   }
 }

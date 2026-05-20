@@ -97,3 +97,5 @@ flutter:
   - assets/icons/google.png
   - assets/icons/ai.png
   - assets/masks/lip_oval.png
+  - assets/data/named_colors.json
+  - assets/data/color_name_list.json

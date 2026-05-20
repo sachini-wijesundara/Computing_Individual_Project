@@ -821,6 +821,9 @@ private class NativeLipRendererView: NSObject, FlutterPlatformView, FlutterStrea
   private var wigMaskActive    = false // true while hairMaskLayer has a shadow cast
 
   private let lipOverlayLayer = CAShapeLayer()
+  /// Radial blush (soft oval wash — avoids mesh “triangle” artifacts from polygon fill).
+  private let blushLeftLayer = CAGradientLayer()
+  private let blushRightLayer = CAGradientLayer()
   /// When Flutter sends `setLook`, composite multiple categories (foundation + lips, etc.).
   private let makeupStackParent = CALayer()
   private var makeupSlotLayers: [CAShapeLayer] = []
@@ -831,6 +834,10 @@ private class NativeLipRendererView: NSObject, FlutterPlatformView, FlutterStrea
   }
   private var makeupLookStack: [MakeupLookEntry] = []
   private var usesMakeupLookStack = false
+  /// Set while building foundation path; used for top hairline gradient feather.
+  private var needsFoundationHairlineFeather = false
+  private var foundationFeatherHairlineY: CGFloat = 0
+  private var foundationFeatherFaceLen: CGFloat = 80
   private let hairSideLayer   = CAShapeLayer()   // side-screen hair panels (unused but kept)
   private let hairMaskLayer   = CALayer()         // pixel-accurate hair colour
   private let hairImageLayer  = CALayer()         // wig composite overlay
@@ -930,8 +937,12 @@ private class NativeLipRendererView: NSObject, FlutterPlatformView, FlutterStrea
         self?.previewLayer?.frame = bounds
         self?.lipOverlayLayer.frame = bounds
         self?.makeupStackParent.frame = bounds
-        for sl in self?.makeupSlotLayers ?? [] {
-          sl.frame = CGRect(origin: .zero, size: bounds.size)
+        if self?.usesMakeupLookStack == true, !(self?.makeupLookStack.isEmpty ?? true) {
+          self?.layoutMakeupSlotLayersForStack()
+        } else {
+          for sl in self?.makeupSlotLayers ?? [] {
+            sl.frame = CGRect(origin: .zero, size: bounds.size)
+          }
         }
         self?.hairSideLayer.frame = bounds
         self?.hairMaskLayer.frame = bounds
@@ -960,6 +971,20 @@ private class NativeLipRendererView: NSObject, FlutterPlatformView, FlutterStrea
     lipOverlayLayer.allowsEdgeAntialiasing = true
     lipOverlayLayer.opacity = 0.0
     container.layer.addSublayer(lipOverlayLayer)
+
+    for blush in [blushLeftLayer, blushRightLayer] {
+      blush.type = .radial
+      blush.opacity = 0
+      blush.zPosition = 45
+      blush.compositingFilter = "softLightBlendMode"
+      blush.actions = [
+        "bounds": NSNull(),
+        "position": NSNull(),
+        "opacity": NSNull(),
+        "colors": NSNull(),
+      ]
+      container.layer.insertSublayer(blush, below: lipOverlayLayer)
+    }
 
     makeupStackParent.name = "makeupStackParent"
     makeupStackParent.masksToBounds = false
@@ -1827,6 +1852,10 @@ private class NativeLipRendererView: NSObject, FlutterPlatformView, FlutterStrea
 
         // ── ALL MAKEUP MODES ─────────────────────────────────────────────────
         } else {
+          if let pb = CMSampleBufferGetImageBuffer(sampleBuffer) {
+            lastCaptureBufferWidth = CGFloat(CVPixelBufferGetWidth(pb))
+            lastCaptureBufferHeight = CGFloat(CVPixelBufferGetHeight(pb))
+          }
           if let landmarker = faceLandmarker {
             let lmResult = try landmarker.detect(videoFrame: image, timestampInMilliseconds: timestampMs)
             DispatchQueue.main.async { [weak self] in
@@ -1841,40 +1870,78 @@ private class NativeLipRendererView: NSObject, FlutterPlatformView, FlutterStrea
     }
   }
 
-  /// Normalized landmark [0,1]² in **pixel-buffer / MPImage** space → view coords.
-  /// Do not use `AVCaptureVideoPreviewLayer.layerPointConverted` here: on some OS/device
-  /// combinations it returns non-finite or inconsistent points so every finger fails
-  /// on-screen checks and nothing draws. Buffer aspect-fill matches MediaPipe input.
+  /// Rotation for portrait try-on when the pixel buffer is still landscape (typical iPhone front camera).
+  private func captureRotationDegrees() -> Int {
+    let bw = lastCaptureBufferWidth
+    let bh = lastCaptureBufferHeight
+    guard bw > 8, bh > 8 else { return 90 }
+    return bw > bh ? 90 : 0
+  }
+
+  /// Same mapping as Android `mapNormToViewCover`: rotate normalized landmarks, mirror for front camera, aspect-fill.
+  private func mapNormToViewCover(
+    nx: CGFloat, ny: CGFloat,
+    imageWidth iw: CGFloat, imageHeight ih: CGFloat,
+    rotationDegrees rot: Int,
+    viewWidth vw: CGFloat, viewHeight vh: CGFloat,
+    mirrorX: Bool
+  ) -> CGPoint {
+    guard iw > 1, ih > 1, vw > 1, vh > 1 else { return .zero }
+    let rotN = ((rot % 360) + 360) % 360
+    let rw: CGFloat
+    let rh: CGFloat
+    if rotN % 180 == 0 {
+      rw = iw
+      rh = ih
+    } else {
+      rw = ih
+      rh = iw
+    }
+    let tx: CGFloat
+    let ty: CGFloat
+    switch rotN {
+    case 90:
+      tx = 1 - ny
+      ty = nx
+    case 180:
+      tx = 1 - nx
+      ty = 1 - ny
+    case 270:
+      tx = ny
+      ty = 1 - nx
+    default:
+      tx = nx
+      ty = ny
+    }
+    let fx = mirrorX ? (1 - tx) : tx // equation //
+    let bx = fx * rw
+    let by = ty * rh
+    let scale = max(vw / rw, vh / rh)
+    let dx = (vw - rw * scale) / 2
+    let dy = (vh - rh * scale) / 2
+    return CGPoint(x: bx * scale + dx, y: by * scale + dy)
+  }
+
+  /// Normalized landmark [0,1]² in **pixel-buffer / MPImage** space → view coords (aspect-fill + rotation + mirror).
   private func landmarkNormToView(nx: CGFloat, ny: CGFloat) -> CGPoint {
     let px = min(0.999, max(0.001, nx))
     let py = min(0.999, max(0.001, ny))
-    let manual = mapHandNormToPreview(nx: px, ny: py)
-    // Prefer preview-layer mapping first (true camera->screen conversion).
-    if let previewLayer = previewLayer {
-      let p = previewLayer.layerPointConverted(fromCaptureDevicePoint: CGPoint(x: px, y: py))
-      if p.x.isFinite, p.y.isFinite, p.x > -200, p.y > -200,
-         p.x < container.bounds.width + 200, p.y < container.bounds.height + 200 {
-        // If preview-layer conversion diverges too much from aspect-fill mapping,
-        // prefer manual mapping (prevents off-hand drifting on some iOS builds).
-        let d = hypot(p.x - manual.x, p.y - manual.y)
-        let maxAllowed = max(28, min(container.bounds.width, container.bounds.height) * 0.22)
-        if d <= maxAllowed {
-          return p
-        }
-      }
-    }
-    // Fallback to manual aspect-fill mapping.
-    return manual
+    return mapHandNormToPreview(nx: px, ny: py)
   }
 
-  /// Aspect-fill fallback when preview is not ready; uses last known buffer size (not hardcoded 720×1280).
   private func mapHandNormToPreview(nx: CGFloat, ny: CGFloat) -> CGPoint {
     let viewW = container.bounds.width
     let viewH = container.bounds.height
     if viewW < 2 || viewH < 2 { return .zero }
-    let bw = lastCaptureBufferWidth > 8 ? lastCaptureBufferWidth : 720
-    let bh = lastCaptureBufferHeight > 8 ? lastCaptureBufferHeight : 1280
-    return NailPolishRenderer.aspectFillNormToView(nx: nx, ny: ny, bufferWidth: bw, bufferHeight: bh, viewWidth: viewW, viewHeight: viewH)
+    let iw = lastCaptureBufferWidth > 8 ? lastCaptureBufferWidth : 720
+    let ih = lastCaptureBufferHeight > 8 ? lastCaptureBufferHeight : 1280
+    return mapNormToViewCover(
+      nx: nx, ny: ny,
+      imageWidth: iw, imageHeight: ih,
+      rotationDegrees: captureRotationDegrees(),
+      viewWidth: viewW, viewHeight: viewH,
+      mirrorX: hairFlipToMatchMirroredPreview
+    )
   }
 
   private func drawNailOverlays(result: HandLandmarkerResult?) {
@@ -2814,9 +2881,47 @@ private class NativeLipRendererView: NSObject, FlutterPlatformView, FlutterStrea
 
   // ── HSL helpers removed from here ─────────────────────────────────────────────
 
+  private func hideBlushGradientLayers() {
+    blushLeftLayer.opacity = 0
+    blushRightLayer.opacity = 0
+  }
+
+  /// Oval radial blush on one cheek (center + radii in view space).
+  private func applyBlushRadialGradient(
+    to layer: CAGradientLayer,
+    center: CGPoint,
+    radiusX: CGFloat,
+    radiusY: CGFloat,
+    tiltRadians: CGFloat,
+    shade: UIColor,
+    intensity: CGFloat
+  ) {
+    guard radiusX > 2, radiusY > 2 else {
+      layer.opacity = 0
+      return
+    }
+    let t = pow(max(0.0, min(1.0, intensity)), 0.52)
+    let peak = max(0.10, min(0.52, 0.34 * t))
+    layer.type = .radial
+    layer.colors = [
+      shade.withAlphaComponent(peak).cgColor,
+      shade.withAlphaComponent(peak * 0.38).cgColor,
+      shade.withAlphaComponent(0).cgColor,
+    ]
+    layer.locations = [0, 0.42, 1]
+    layer.startPoint = CGPoint(x: 0.5, y: 0.5)
+    layer.endPoint = CGPoint(x: 1, y: 1)
+    layer.compositingFilter = "softLightBlendMode"
+    layer.bounds = CGRect(x: 0, y: 0, width: radiusX * 2, height: radiusY * 2)
+    layer.position = center
+    layer.anchorPoint = CGPoint(x: 0.5, y: 0.5)
+    layer.setAffineTransform(CGAffineTransform(rotationAngle: tiltRadians))
+    layer.opacity = Float(min(1.0, 0.55 + t * 0.45))
+  }
 
   private func drawLips(_ result: FaceLandmarkerResult) {
     guard let landmarks = result.faceLandmarks.first else {
+        hideBlushGradientLayers()
         lipOverlayLayer.opacity = 0
         for sl in makeupSlotLayers {
             sl.opacity = 0
@@ -2830,31 +2935,35 @@ private class NativeLipRendererView: NSObject, FlutterPlatformView, FlutterStrea
     lipOverlayLayer.lineJoin = .miter
     lipOverlayLayer.lineCap = .butt
     lipOverlayLayer.compositingFilter = nil
+    needsFoundationHairlineFeather = false
 
     func point(for index: Int) -> CGPoint {
         let lm = landmarks[index]
-        let viewW = container.bounds.width
-        let viewH = container.bounds.height
-        if viewW == 0 || viewH == 0 { return .zero }
-        
-        let viewAspect = viewW / viewH
-        let bufferAspect: CGFloat = 720.0 / 1280.0
-        
-        if viewAspect > bufferAspect {
-            let scaledH = viewW / bufferAspect
-            let yOffset = -(scaledH - viewH) / 2.0
-            return CGPoint(
-                x: CGFloat(lm.x) * viewW,
-                y: CGFloat(lm.y) * scaledH + yOffset
-            )
-        } else {
-            let scaledW = viewH * bufferAspect
-            let xOffset = -(scaledW - viewW) / 2.0
-            return CGPoint(
-                x: CGFloat(lm.x) * scaledW + xOffset,
-                y: CGFloat(lm.y) * viewH
-            )
-        }
+        return landmarkNormToView(nx: CGFloat(lm.x), ny: CGFloat(lm.y))
+    }
+
+    /// Soft fade only in the top band above the mesh hairline — keeps full foundation on the curved forehead.
+    func applyFoundationHairlineFeather(to layer: CAShapeLayer, hairlineY: CGFloat, faceLen: CGFloat) {
+        let h = container.bounds.height
+        guard h > 1 else { return }
+        let fade = max(14, faceLen * 0.09)
+        let yTop = max(0, (hairlineY - fade) / h)
+        let ySolid = min(1, (hairlineY + fade * 0.35) / h)
+        let mask = CAGradientLayer()
+        mask.frame = container.bounds
+        mask.startPoint = CGPoint(x: 0.5, y: 0)
+        mask.endPoint = CGPoint(x: 0.5, y: 1)
+        mask.colors = [
+            UIColor.clear.cgColor,
+            UIColor.white.withAlphaComponent(0.35).cgColor,
+            UIColor.white.cgColor,
+        ]
+        mask.locations = [
+            0,
+            NSNumber(value: Float(yTop)),
+            NSNumber(value: Float(ySolid)),
+        ]
+        layer.mask = mask
     }
 
     func addPolygon(indices: [Int], to path: UIBezierPath, close: Bool = true) {
@@ -2897,6 +3006,38 @@ private class NativeLipRendererView: NSObject, FlutterPlatformView, FlutterStrea
         path.close()
     }
 
+    /// Positions / sizes oval radial blush from stable cheek landmarks (not the large mesh poly).
+    func updateLiveBlushGradients(shade: UIColor, intensity: CGFloat) {
+        let cheekL = point(for: 234)
+        let cheekR = point(for: 454)
+        let faceW = max(hypot(cheekR.x - cheekL.x, cheekR.y - cheekL.y), 40)
+        let eyeL = point(for: 33)
+        let eyeR = point(for: 263)
+
+        let leftCenter = CGPoint(
+            x: (point(for: 116).x + point(for: 50).x + point(for: 205).x) / 3,
+            y: (point(for: 116).y + point(for: 50).y + point(for: 205).y) / 3
+        )
+        let rightCenter = CGPoint(
+            x: (point(for: 345).x + point(for: 280).x + point(for: 425).x) / 3,
+            y: (point(for: 345).y + point(for: 280).y + point(for: 425).y) / 3
+        )
+
+        let rx = faceW * 0.15
+        let ry = faceW * 0.10
+        let tiltL = atan2(leftCenter.y - eyeL.y, leftCenter.x - eyeL.x) + 0.22
+        let tiltR = atan2(rightCenter.y - eyeR.y, rightCenter.x - eyeR.x) - 0.22
+
+        applyBlushRadialGradient(
+            to: blushLeftLayer, center: leftCenter, radiusX: rx, radiusY: ry,
+            tiltRadians: tiltL, shade: shade, intensity: intensity
+        )
+        applyBlushRadialGradient(
+            to: blushRightLayer, center: rightCenter, radiusX: rx, radiusY: ry,
+            tiltRadians: tiltR, shade: shade, intensity: intensity
+        )
+    }
+
     /// Filled strip along an open polyline (e.g. nose bridge) so highlight isn’t a razor-thin stroke.
     func addRibbonAlongPolyline(indices: [Int], halfWidth: CGFloat, to p: UIBezierPath) {
         guard indices.count >= 2, halfWidth > 0.5 else { return }
@@ -2924,8 +3065,15 @@ private class NativeLipRendererView: NSObject, FlutterPlatformView, FlutterStrea
     }
 
     let fillMakeupPathForCurrentCategory: (UIBezierPath) -> Bool = { [self] path in
+    let categoryEarly = currentCategory.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    if categoryEarly != "cmd_blush" {
+      hideBlushGradientLayers()
+    }
     lipOverlayLayer.shadowOpacity = 0
     lipOverlayLayer.shadowRadius = 0
+    lipOverlayLayer.shadowPath = nil
+    lipOverlayLayer.filters = nil
+    lipOverlayLayer.shouldRasterize = false
     lipOverlayLayer.lineWidth = 0
     lipOverlayLayer.strokeColor = UIColor.clear.cgColor
     lipOverlayLayer.fillColor = self.currentShade.withAlphaComponent(self.currentIntensity).cgColor
@@ -3018,32 +3166,16 @@ private class NativeLipRendererView: NSObject, FlutterPlatformView, FlutterStrea
         lipOverlayLayer.opacity = 0
         return true
     } else if isBlush {
-        // Blush: Angled upwards along the cheekbones (zygomatic bone)
-        let leftCheek = [116, 117, 118, 100, 101, 119, 120, 121, 147, 213, 192, 214, 207, 205, 116]
-        let rightCheek = [345, 346, 347, 329, 330, 348, 349, 350, 376, 433, 416, 434, 427, 425, 345]
-
-        lipOverlayLayer.fillRule = .nonZero
-        // colorBlendMode: keeps each cheek’s *camera* brightness (avoids soft-light “shiny vs flat”
-        // asymmetry when one side catches more light). Hue/sat come from the blush shade.
-        lipOverlayLayer.compositingFilter = "colorBlendMode"
-        addSmoothedCheekPolygon(indices: leftCheek, to: path)
-        addSmoothedCheekPolygon(indices: rightCheek, to: path)
-        
-        let blushT = pow(max(0.0, min(1.0, self.currentIntensity)), 0.52)
-        lipOverlayLayer.fillColor = self.currentShade.withAlphaComponent(max(0.08, 0.30 * blushT)).cgColor
-        lipOverlayLayer.strokeColor = UIColor.clear.cgColor
-        lipOverlayLayer.lineWidth = 0
-        // Neutral shadow only feathers the silhouette — coloured shadow + blend read as “wet” sheen.
-        lipOverlayLayer.shadowColor = UIColor.black.cgColor
-        lipOverlayLayer.shadowOpacity = Float(0.14 + 0.18 * Float(blushT))
-        lipOverlayLayer.shadowRadius = 44.0
-        lipOverlayLayer.shadowOffset = .zero
+        lipOverlayLayer.opacity = 0
+        lipOverlayLayer.path = nil
+        updateLiveBlushGradients(shade: self.currentShade, intensity: self.currentIntensity)
+        return true
 
     } else if isHighlight {
         // Cheeks: smoothed fills. Nose: filled ribbon (not 1px stroke — avoids “laser line”). Cupid: smoothed loop.
         let leftHighlight = [116, 117, 118, 100, 101, 119, 120, 121, 147, 116]
         let rightHighlight = [345, 346, 347, 329, 330, 348, 349, 350, 376, 345]
-        let noseBridge = [168, 6, 197, 195, 5, 4, 1]
+        let noseBridge = [168, 6, 197, 195, 5]
         let cupid = [0, 267, 269, 270, 409, 291, 0]
 
         lipOverlayLayer.fillRule = .nonZero
@@ -3054,7 +3186,7 @@ private class NativeLipRendererView: NSObject, FlutterPlatformView, FlutterStrea
         let eyeMidY = (point(for: 33).y + point(for: 263).y) * 0.5
         let chinY = point(for: 152).y
         let faceLen = max(abs(chinY - eyeMidY), 40)
-        let noseHalfW = max(3.2, min(8.5, faceLen * 0.052))
+        let noseHalfW = max(2.8, min(6.5, faceLen * 0.042))
         addRibbonAlongPolyline(indices: noseBridge, halfWidth: noseHalfW, to: path)
         addSmoothedCheekPolygon(indices: cupid, to: path)
 
@@ -3070,30 +3202,31 @@ private class NativeLipRendererView: NSObject, FlutterPlatformView, FlutterStrea
         lipOverlayLayer.shadowOffset = .zero
 
     } else if isConcealer {
-        // Concealer: under-eye triangles and sides of nose.
+        // Concealer: brighten under-eyes + soften nose sides (layered above foundation in setLook).
         let leftUnderEye = [33, 133, 155, 154, 153, 145, 144, 163, 7, 33]
         let rightUnderEye = [362, 263, 249, 390, 373, 374, 380, 381, 382, 362]
         let leftNoseSide = [48, 115, 131, 134, 220, 45, 48]
         let rightNoseSide = [278, 344, 360, 363, 440, 275, 278]
 
-        addPolygon(indices: leftUnderEye, to: path)
-        addPolygon(indices: rightUnderEye, to: path)
-        addPolygon(indices: leftNoseSide, to: path)
-        addPolygon(indices: rightNoseSide, to: path)
+        addSmoothedCheekPolygon(indices: leftUnderEye, to: path)
+        addSmoothedCheekPolygon(indices: rightUnderEye, to: path)
+        addSmoothedCheekPolygon(indices: leftNoseSide, to: path)
+        addSmoothedCheekPolygon(indices: rightNoseSide, to: path)
 
-        // Under-eye + nose quads overlap; evenOdd fill subtracts overlaps → invisible patches.
         lipOverlayLayer.fillRule = .nonZero
-        lipOverlayLayer.fillColor = self.currentShade.withAlphaComponent(max(0.18, min(0.42, self.currentIntensity * 0.55))).cgColor
+        lipOverlayLayer.compositingFilter = "softLightBlendMode"
+        let concealerT = pow(max(0.0, min(1.0, self.currentIntensity)), 0.42)
+        lipOverlayLayer.fillColor = self.currentShade.withAlphaComponent(max(0.26, min(0.58, 0.38 + concealerT * 0.28))).cgColor
         lipOverlayLayer.strokeColor = UIColor.clear.cgColor
         lipOverlayLayer.shadowColor = self.currentShade.cgColor
-        lipOverlayLayer.shadowOpacity = Float(min(0.24, self.currentIntensity * 0.35))
-        lipOverlayLayer.shadowRadius = 8.0
+        lipOverlayLayer.shadowOpacity = Float(min(0.32, 0.14 + concealerT * 0.22))
+        lipOverlayLayer.shadowRadius = 16.0
         lipOverlayLayer.shadowOffset = .zero
 
-    } else if isFace || category.contains("foundation") || category.contains("concealer") {
-        // Foundation: Face oval must follow MediaPipe perimeter on the forehead: …109→151→10→338…
-        // A straight 151→338 closing chord sits *above* glabella (10) in the mesh, so the skin near
-        // the hairline apex stays *outside* the polygon → a bare triangular “cap”. Keep 10 on the path.
+    } else if isFace || category.contains("foundation") {
+        // Foundation: Face oval follows MediaPipe …109→151→10, then **must not** use a straight
+        // `close()` from 10→338 (that edge is one mesh segment and reads as a harsh horizontal seam).
+        // `addFoundationFaceOvalSmoothed` finishes with a curved arc along the hairline instead.
         let faceOval = [338, 297, 332, 284, 251, 389, 356, 454, 323, 361, 288, 397, 365, 379, 378, 400, 377, 152, 148, 176, 149, 150, 136, 172, 58, 132, 93, 234, 127, 162, 21, 54, 103, 67, 109, 151, 10]
         let outerLips = [61, 185, 40, 39, 37, 0, 267, 269, 270, 409, 291, 375, 321, 405, 314, 17, 84, 181, 91, 146]
         let leftEye = [33, 7, 163, 144, 145, 153, 154, 155, 133, 173, 157, 158, 159, 160, 161, 246]
@@ -3104,23 +3237,23 @@ private class NativeLipRendererView: NSObject, FlutterPlatformView, FlutterStrea
         let eyeMidY = (point(for: 33).y + point(for: 263).y) * 0.5
         let chinY = point(for: 152).y
         let faceLen = max(abs(chinY - eyeMidY), 40)
-        // Hairline: cap + scale + small fixed crown nudge (px) — last mile above mesh oval.
-        let liftPx = min(30, max(8, faceLen * 0.095))
-        let hairlineExtraPx: CGFloat = 4.5
-        let hairlineCrownIds: Set<Int> = [10, 151, 109, 338, 297, 332, 284, 251]
+        // Extend mask to the curved forehead band (user arc); gradient feather fades only into hair above.
+        let liftPx = min(44, max(12, faceLen * 0.13))
+        let hairlineExtraPx: CGFloat = 6
+        let hairlineBoostIds: Set<Int> = [338, 297, 332, 284, 251, 151, 109, 10]
         let liftWeight: [Int: CGFloat] = [
-            151: 1.0, 109: 1.0, 338: 1.0, 10: 0.98,
-            297: 0.60, 332: 0.60, 284: 0.42, 251: 0.42,
-            389: 0.27, 356: 0.20, 454: 0.16, 323: 0.16, 361: 0.14, 288: 0.12, 397: 0.12, 365: 0.10,
+            338: 1.0, 297: 0.72, 332: 0.72, 284: 0.48, 251: 0.42,
+            151: 0.78, 109: 0.74, 10: 0.76,
+            389: 0.28, 356: 0.20, 454: 0.16, 323: 0.16, 361: 0.14, 288: 0.12, 397: 0.12, 365: 0.10,
             379: 0.07, 378: 0.07, 400: 0.06, 377: 0.06,
-            67: 0.39, 103: 0.34, 54: 0.30, 21: 0.29, 162: 0.27, 127: 0.23, 234: 0.21, 93: 0.17, 132: 0.14,
-            172: 0.10, 58: 0.085,
+            67: 0.32, 103: 0.28, 54: 0.22, 21: 0.18, 162: 0.20, 127: 0.16, 234: 0.14, 93: 0.12, 132: 0.10,
+            172: 0.08, 58: 0.07,
         ]
         func foundationPoint(for idx: Int) -> CGPoint {
             let p = point(for: idx)
             guard let w = liftWeight[idx], w > 0 else { return p }
             var y = p.y - liftPx * w
-            if hairlineCrownIds.contains(idx) { y -= hairlineExtraPx }
+            if hairlineBoostIds.contains(idx) { y -= hairlineExtraPx }
             return CGPoint(x: p.x, y: y)
         }
         /// Laplacian-ish smoothing on two contour spans (crown + brow–temple row) to remove mesh
@@ -3142,29 +3275,88 @@ private class NativeLipRendererView: NSObject, FlutterPlatformView, FlutterStrea
                     }
                 }
             }
+            /// Official oval closes **10 → 338** as one mesh edge — in 2D it reads as a harsh seam.
+            /// Subdivide with a quadratic arc **bowed toward the hairline** (perpendicular away from
+            /// face interior — works when the phone or head is tilted; “screen up” alone does not).
+            func appendCurvedForeheadClosure(from a: CGPoint, to b: CGPoint) {
+                let mx = (a.x + b.x) * 0.5
+                let my = (a.y + b.y) * 0.5
+                var dx = b.x - a.x
+                var dy = b.y - a.y
+                let len = max(CGFloat(1e-4), hypot(dx, dy))
+                dx /= len
+                dy /= len
+                var perpX = -dy
+                var perpY = dx
+                // Interior must sit clearly *below* the forehead chord or the perpendicular flip is ambiguous
+                // (reads as a horizontal “step” between tinted and untinted skin).
+                let eL = point(for: 33)
+                let eR = point(for: 263)
+                let nose = point(for: 1)
+                var interior = CGPoint(
+                    x: (eL.x + eR.x + nose.x) / 3.0,
+                    y: (eL.y + eR.y + chinY + nose.y) / 4.0
+                )
+                interior.y += faceLen * 0.14
+                let inX = interior.x - mx
+                let inY = interior.y - my
+                // Bow slightly **toward hairline** so the top edge reaches the curved forehead (user arc).
+                if perpX * inX + perpY * inY > 0 {
+                    perpX = -perpX
+                    perpY = -perpY
+                }
+                let bow = min(22, max(6, faceLen * 0.075))
+                let ctrl = CGPoint(x: mx + perpX * bow, y: my + perpY * bow)
+                let steps = 48
+                for s in 1...steps {
+                    let t = CGFloat(s) / CGFloat(steps)
+                    let om = 1 - t
+                    let qx = om * om * a.x + 2 * om * t * ctrl.x + t * t * b.x
+                    let qy = om * om * a.y + 2 * om * t * ctrl.y + t * t * b.y
+                    p.addLine(to: CGPoint(x: qx, y: qy))
+                }
+            }
             let last = pts.count - 1
-            smoothInterior(0...min(6, last), passes: 5)
-            if last >= 36 { smoothInterior((last - 10)...last, passes: 5) }
-            else if last >= 35 { smoothInterior((last - 9)...last, passes: 5) }
+            // Wider crown span (temple → hairline) reduces zig-zag / hard “cap” at forehead.
+            smoothInterior(0...min(14, last), passes: 6)
+            if last >= 36 { smoothInterior((last - 12)...last, passes: 7) }
+            else if last >= 35 { smoothInterior((last - 10)...last, passes: 7) }
+            // Lift full crown row (temples + center) toward the drawn forehead arc.
+            let rampStart = max(0, last - 10)
+            let rampExtra = min(20, max(8, faceLen * 0.055))
+            if rampStart <= last {
+                let denom = CGFloat(max(1, last - rampStart))
+                for i in rampStart...last {
+                    let u = CGFloat(i - rampStart) / denom
+                    pts[i].y -= rampExtra * (0.18 + 0.65 * u)
+                }
+            }
             p.move(to: pts[0])
             for i in 1...last { p.addLine(to: pts[i]) }
-            p.close()
+            appendCurvedForeheadClosure(from: pts[last], to: pts[0])
         }
 
         addFoundationFaceOvalSmoothed(faceOval, to: path)
         addPolygon(indices: outerLips, to: path)
         addPolygon(indices: leftEye, to: path)
         addPolygon(indices: rightEye, to: path)
+
+        let crownIds = [338, 297, 332, 284, 251, 151, 109, 10, 67, 103, 54, 21]
+        let crownTopY = crownIds.map { foundationPoint(for: $0).y }.min() ?? point(for: 10).y
+        foundationFeatherHairlineY = crownTopY
+        foundationFeatherFaceLen = faceLen
+        needsFoundationHairlineFeather = true
         
-        // Foundation needs to be visible enough to see the shade match clearly
-        let alpha = max(0.20, min(0.65, self.currentIntensity * 0.7))
+        // Even, skin-like base — soft-light; edge feather comes from gradient mask (not shadow).
+        let foundationT = pow(max(0.0, min(1.0, self.currentIntensity)), 0.55)
+        let alpha = max(0.18, min(0.50, 0.16 + foundationT * 0.34))
         lipOverlayLayer.fillColor = self.currentShade.withAlphaComponent(alpha).cgColor
-        
-        // Add a subtle glow/bloom for foundation to feel more "full face"
-        lipOverlayLayer.shadowColor = self.currentShade.cgColor
-        lipOverlayLayer.shadowOpacity = Float(alpha * 0.52)
-        lipOverlayLayer.shadowRadius = 24.0
-        lipOverlayLayer.shadowOffset = .zero
+        lipOverlayLayer.compositingFilter = "softLightBlendMode"
+        lipOverlayLayer.lineJoin = .round
+        lipOverlayLayer.lineCap = .round
+        lipOverlayLayer.shadowOpacity = 0
+        lipOverlayLayer.shadowRadius = 0
+        lipOverlayLayer.shadowPath = nil
         
     } else if isShadow {
         // Build a real eyelid band by offsetting the upper lash contour upward.
@@ -3357,6 +3549,13 @@ private class NativeLipRendererView: NSObject, FlutterPlatformView, FlutterStrea
         lipOverlayLayer.fillRule = .evenOdd
     }
     lipOverlayLayer.path = path.cgPath
+    if needsFoundationHairlineFeather && !isCompareMode {
+        applyFoundationHairlineFeather(
+            to: lipOverlayLayer,
+            hairlineY: foundationFeatherHairlineY,
+            faceLen: foundationFeatherFaceLen
+        )
+    }
     return false
     }
 
@@ -3376,19 +3575,21 @@ private class NativeLipRendererView: NSObject, FlutterPlatformView, FlutterStrea
         lipOverlayLayer.opacity = 0
         lipOverlayLayer.path = nil
         lipOverlayLayer.mask = nil
-        makeupStackParent.frame = CGRect(origin: .zero, size: container.bounds.size)
-        if isCompareMode {
-            let mask = CAShapeLayer()
+        makeupStackParent.mask = nil
+        layoutMakeupSlotLayersForStack()
+        let compareMaskPath: CGPath? = {
+            guard isCompareMode else { return nil }
             let splitX = container.bounds.width * currentSplitPosition
             let maskRect = CGRect(x: splitX, y: 0, width: container.bounds.width - splitX, height: container.bounds.height)
-            mask.path = UIBezierPath(rect: maskRect).cgPath
-            makeupStackParent.mask = mask
-        } else {
-            makeupStackParent.mask = nil
-        }
+            return UIBezierPath(rect: maskRect).cgPath
+        }()
+        var blushEntry: MakeupLookEntry?
         for i in 0..<makeupSlotLayers.count {
             if i < makeupLookStack.count {
                 let e = makeupLookStack[i]
+                if e.category.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "cmd_blush" {
+                    blushEntry = e
+                }
                 self.currentShade = e.shade
                 self.currentIntensity = e.intensity
                 self.currentCategory = e.category
@@ -3396,14 +3597,49 @@ private class NativeLipRendererView: NSObject, FlutterPlatformView, FlutterStrea
                 if fillMakeupPathForCurrentCategory(slotPath) {
                     makeupSlotLayers[i].opacity = 0
                     makeupSlotLayers[i].path = nil
+                    makeupSlotLayers[i].mask = nil
+                    makeupSlotLayers[i].compositingFilter = nil
                     continue
                 }
                 self.copyFacePaint(from: lipOverlayLayer, to: makeupSlotLayers[i])
                 makeupSlotLayers[i].opacity = 1
+                let slotCat = e.category.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                let isFoundationSlot = slotCat == "cmd_face" || slotCat.contains("foundation")
+                if let compareMaskPath {
+                    let slotMask = CAShapeLayer()
+                    slotMask.path = compareMaskPath
+                    makeupSlotLayers[i].mask = slotMask
+                } else if isFoundationSlot && needsFoundationHairlineFeather {
+                    applyFoundationHairlineFeather(
+                        to: makeupSlotLayers[i],
+                        hairlineY: foundationFeatherHairlineY,
+                        faceLen: foundationFeatherFaceLen
+                    )
+                } else {
+                    makeupSlotLayers[i].mask = nil
+                }
             } else {
                 makeupSlotLayers[i].opacity = 0
                 makeupSlotLayers[i].path = nil
+                makeupSlotLayers[i].mask = nil
+                makeupSlotLayers[i].compositingFilter = nil
             }
+        }
+        if let blush = blushEntry {
+            updateLiveBlushGradients(shade: blush.shade, intensity: blush.intensity)
+            if isCompareMode, currentSplitPosition < 0.99 {
+                let splitX = container.bounds.width * currentSplitPosition
+                let maskRect = CGRect(x: splitX, y: 0, width: container.bounds.width - splitX, height: container.bounds.height)
+                let mask = CAShapeLayer()
+                mask.path = UIBezierPath(rect: maskRect).cgPath
+                blushLeftLayer.mask = mask
+                blushRightLayer.mask = mask
+            } else {
+                blushLeftLayer.mask = nil
+                blushRightLayer.mask = nil
+            }
+        } else {
+            hideBlushGradientLayers()
         }
         let catHair = currentCategory.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         if catHair != "cmd_haircolor" { hairSideLayer.opacity = 0 }
@@ -3428,8 +3664,22 @@ private class NativeLipRendererView: NSObject, FlutterPlatformView, FlutterStrea
 
     let path = UIBezierPath()
     if fillMakeupPathForCurrentCategory(path) {
+        let catBlush = currentCategory.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if catBlush == "cmd_blush", isCompareMode, currentSplitPosition < 0.99 {
+            let splitX = container.bounds.width * currentSplitPosition
+            let maskRect = CGRect(x: splitX, y: 0, width: container.bounds.width - splitX, height: container.bounds.height)
+            let mask = CAShapeLayer()
+            mask.path = UIBezierPath(rect: maskRect).cgPath
+            blushLeftLayer.mask = mask
+            blushRightLayer.mask = mask
+        } else {
+            blushLeftLayer.mask = nil
+            blushRightLayer.mask = nil
+        }
         return
     }
+    blushLeftLayer.mask = nil
+    blushRightLayer.mask = nil
     lipOverlayLayer.opacity = 1.0
 
     let catLowerHair = currentCategory.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
@@ -3464,6 +3714,38 @@ private class NativeLipRendererView: NSObject, FlutterPlatformView, FlutterStrea
     dst.shadowOpacity = src.shadowOpacity
     dst.shadowRadius = src.shadowRadius
     dst.shadowOffset = src.shadowOffset
+    dst.shadowPath = src.shadowPath
+    dst.filters = src.filters
+    dst.shouldRasterize = src.shouldRasterize
+    dst.rasterizationScale = src.rasterizationScale
+  }
+
+  /// Full-makeup `setLook` slots must sit directly above the camera preview (siblings), not only
+  /// inside `makeupStackParent`. Otherwise blush `colorBlendMode` blends with foundation layers
+  /// instead of live pixels — same quality as single-product `setEffect` on `lipOverlayLayer`.
+  private func layoutMakeupSlotLayersForStack() {
+    let size = container.bounds.size
+    guard size.width > 1, size.height > 1 else { return }
+    let frame = CGRect(origin: .zero, size: size)
+    let subs = container.layer.sublayers
+    for (i, sl) in makeupSlotLayers.enumerated() {
+      var misplaced = sl.superlayer != container.layer
+      if !misplaced, let preview = previewLayer, let subs,
+         let pi = subs.firstIndex(of: preview), let si = subs.firstIndex(of: sl) {
+        misplaced = si <= pi
+      }
+      if misplaced {
+        sl.removeFromSuperlayer()
+        if let preview = previewLayer {
+          container.layer.insertSublayer(sl, above: preview)
+        } else {
+          container.layer.insertSublayer(sl, below: lipOverlayLayer)
+        }
+      }
+      sl.frame = frame
+      sl.zPosition = 40 + CGFloat(i)
+    }
+    lipOverlayLayer.zPosition = 120
   }
 
   /// Normalize EXIF orientation so selfie landmarks/rendering align to actual pixels.
@@ -3590,6 +3872,7 @@ private class NativeLipRendererView: NSObject, FlutterPlatformView, FlutterStrea
       paint.blend = .normal
 
       let isBlush = cat == "cmd_blush"
+      let isConcealer = cat == "cmd_concealer" || cat.contains("concealer")
       let isFace = cat == "cmd_face" || cat == "cmd_foundation" || cat.contains("foundation")
       let isHighlight = cat == "cmd_highlight"
       let isShadow = cat == "cmd_eyeshadow"
@@ -3597,24 +3880,14 @@ private class NativeLipRendererView: NSObject, FlutterPlatformView, FlutterStrea
       let isEyeliner = cat == "cmd_eyeliner" || cat == "cmd_eye"
       let isEyebrow = cat == "cmd_eyebrow"
       let isLipLiner = cat == "cmd_lipliner"
-      let isLipstick = (!isBlush && !isFace && !isHighlight && !isShadow && !isMascara && !isEyeliner && !isEyebrow && !isLipLiner)
+      let isLipstick = (!isBlush && !isConcealer && !isFace && !isHighlight && !isShadow && !isMascara && !isEyeliner && !isEyebrow && !isLipLiner)
 
       if isBlush {
-        let leftCheek = [116, 117, 118, 100, 101, 119, 120, 121, 147, 213, 192, 214, 207, 205, 116]
-        let rightCheek = [345, 346, 347, 329, 330, 348, 349, 350, 376, 433, 416, 434, 427, 425, 345]
-        paint.fillRule = .winding
-        paint.blend = blendMode(for: "colorBlendMode")
-        addSmoothedCheekPolygon(leftCheek, to: path)
-        addSmoothedCheekPolygon(rightCheek, to: path)
-        let t = pow(max(0.0, min(1.0, intensity)), 0.52)
-        paint.fill = shade.withAlphaComponent(max(0.08, 0.30 * t))
-        paint.shadowColor = UIColor.black
-        paint.shadowOpacity = 0.14 + 0.18 * t
-        paint.shadowRadius = 44
+        return nil
       } else if isHighlight {
         let leftHighlight = [116, 117, 118, 100, 101, 119, 120, 121, 147, 116]
         let rightHighlight = [345, 346, 347, 329, 330, 348, 349, 350, 376, 345]
-        let noseBridge = [168, 6, 197, 195, 5, 4, 1]
+        let noseBridge = [168, 6, 197, 195, 5]
         let cupid = [0, 267, 269, 270, 409, 291, 0]
         paint.fillRule = .winding
         paint.blend = blendMode(for: "softLightBlendMode")
@@ -3623,7 +3896,7 @@ private class NativeLipRendererView: NSObject, FlutterPlatformView, FlutterStrea
         let eyeMidY = (point(33).y + point(263).y) * 0.5
         let chinY = point(152).y
         let faceLen = max(abs(chinY - eyeMidY), 40)
-        let noseHalfW = max(3.2, min(8.5, faceLen * 0.052))
+        let noseHalfW = max(2.8, min(6.5, faceLen * 0.042))
         addRibbonAlongPolyline(noseBridge, halfWidth: noseHalfW, to: path)
         addSmoothedCheekPolygon(cupid, to: path)
         let t = pow(max(0.0, min(1.0, intensity)), 0.48)
@@ -3631,6 +3904,22 @@ private class NativeLipRendererView: NSObject, FlutterPlatformView, FlutterStrea
         paint.shadowColor = shade
         paint.shadowOpacity = min(0.45, 0.22 + t * 0.28)
         paint.shadowRadius = 38
+      } else if isConcealer {
+        let leftUnderEye = [33, 133, 155, 154, 153, 145, 144, 163, 7, 33]
+        let rightUnderEye = [362, 263, 249, 390, 373, 374, 380, 381, 382, 362]
+        let leftNoseSide = [48, 115, 131, 134, 220, 45, 48]
+        let rightNoseSide = [278, 344, 360, 363, 440, 275, 278]
+        paint.fillRule = .winding
+        paint.blend = blendMode(for: "softLightBlendMode")
+        addSmoothedCheekPolygon(leftUnderEye, to: path)
+        addSmoothedCheekPolygon(rightUnderEye, to: path)
+        addSmoothedCheekPolygon(leftNoseSide, to: path)
+        addSmoothedCheekPolygon(rightNoseSide, to: path)
+        let t = pow(max(0.0, min(1.0, intensity)), 0.42)
+        paint.fill = shade.withAlphaComponent(max(0.26, min(0.58, 0.38 + t * 0.28)))
+        paint.shadowColor = shade
+        paint.shadowOpacity = min(0.32, 0.14 + t * 0.22)
+        paint.shadowRadius = 16
       } else if isFace {
         let faceOval = [338, 297, 332, 284, 251, 389, 356, 454, 323, 361, 288, 397, 365, 379, 378, 400, 377, 152, 148, 176, 149, 150, 136, 172, 58, 132, 93, 234, 127, 162, 21, 54, 103, 67, 109, 151, 10]
         let outerLips = [61, 185, 40, 39, 37, 0, 267, 269, 270, 409, 291, 375, 321, 405, 314, 17, 84, 181, 91, 146]
@@ -3737,6 +4026,53 @@ private class NativeLipRendererView: NSObject, FlutterPlatformView, FlutterStrea
       return (path, paint)
     }
 
+    func drawPhotoBlushRadial(shade: UIColor, intensity: CGFloat, in context: CGContext) {
+      let cheekL = point(234)
+      let cheekR = point(454)
+      let faceW = max(hypot(cheekR.x - cheekL.x, cheekR.y - cheekL.y), w * 0.08)
+      let eyeL = point(33)
+      let eyeR = point(263)
+      let leftCenter = CGPoint(
+        x: (point(116).x + point(50).x + point(205).x) / 3,
+        y: (point(116).y + point(50).y + point(205).y) / 3
+      )
+      let rightCenter = CGPoint(
+        x: (point(345).x + point(280).x + point(425).x) / 3,
+        y: (point(345).y + point(280).y + point(425).y) / 3
+      )
+      let rx = faceW * 0.15
+      let ry = faceW * 0.10
+      let tiltL = atan2(leftCenter.y - eyeL.y, leftCenter.x - eyeL.x) + 0.22
+      let tiltR = atan2(rightCenter.y - eyeR.y, rightCenter.x - eyeR.x) - 0.22
+
+      func drawOne(center: CGPoint, radiusX: CGFloat, radiusY: CGFloat, tilt: CGFloat) {
+        let t = pow(max(0.0, min(1.0, intensity)), 0.52)
+        let peak = max(0.10, min(0.52, 0.34 * t))
+        let space = CGColorSpaceCreateDeviceRGB()
+        let colors = [
+          shade.withAlphaComponent(peak).cgColor,
+          shade.withAlphaComponent(peak * 0.38).cgColor,
+          shade.withAlphaComponent(0).cgColor,
+        ] as CFArray
+        let locs: [CGFloat] = [0, 0.42, 1]
+        guard let grad = CGGradient(colorsSpace: space, colors: colors, locations: locs) else { return }
+        context.saveGState()
+        context.setBlendMode(.softLight)
+        context.translateBy(x: center.x, y: center.y)
+        context.rotate(by: tilt)
+        context.scaleBy(x: max(radiusX, 1), y: max(radiusY, 1))
+        context.drawRadialGradient(
+          grad,
+          startCenter: .zero, startRadius: 0,
+          endCenter: .zero, endRadius: 1,
+          options: .drawsAfterEndLocation
+        )
+        context.restoreGState()
+      }
+      drawOne(center: leftCenter, radiusX: rx, radiusY: ry, tilt: tiltL)
+      drawOne(center: rightCenter, radiusX: rx, radiusY: ry, tilt: tiltR)
+    }
+
     let renderer = UIGraphicsImageRenderer(size: size)
     let out = renderer.image { ctx in
       baseImage.draw(in: CGRect(origin: .zero, size: size))
@@ -3748,6 +4084,11 @@ private class NativeLipRendererView: NSObject, FlutterPlatformView, FlutterStrea
         layers = [MakeupLookEntry(category: currentCategory, shade: currentShade, intensity: currentIntensity)]
       }
       for entry in layers {
+        let cat = entry.category.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if cat == "cmd_blush" {
+          drawPhotoBlushRadial(shade: entry.shade, intensity: entry.intensity, in: context)
+          continue
+        }
         guard let (p, paint) = buildLayer(category: entry.category, shade: entry.shade, intensity: entry.intensity) else { continue }
         context.saveGState()
         context.setBlendMode(paint.blend)

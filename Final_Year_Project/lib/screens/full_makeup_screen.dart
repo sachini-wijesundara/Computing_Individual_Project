@@ -38,7 +38,7 @@ class _MakeupCat {
 
 const _kCats = <_MakeupCat>[
   _MakeupCat(label: 'Foundation',  firestoreCategory: 'Makeup', firestoreSubCategory: 'Foundation',        arCommand: 'cmd_face',      icon: Icons.water_drop_outlined),
-  _MakeupCat(label: 'Concealer',   firestoreCategory: 'Makeup', firestoreSubCategory: 'Concealer',         arCommand: 'cmd_face',      icon: Icons.brush_outlined),
+  _MakeupCat(label: 'Concealer',   firestoreCategory: 'Makeup', firestoreSubCategory: 'Concealer',         arCommand: 'cmd_concealer', icon: Icons.brush_outlined),
   _MakeupCat(label: 'Blush',       firestoreCategory: 'Makeup', firestoreSubCategory: 'Blush',             arCommand: 'cmd_blush',     icon: Icons.favorite_border_rounded),
   _MakeupCat(label: 'Highlighter', firestoreCategory: 'Makeup', firestoreSubCategory: 'Highlighter',       arCommand: 'cmd_highlight', icon: Icons.auto_awesome_outlined),
   _MakeupCat(label: 'Contour',     firestoreCategory: 'Makeup', firestoreSubCategory: 'Contour & Bronzer', arCommand: 'cmd_highlight', icon: Icons.palette_outlined),
@@ -82,7 +82,7 @@ class _FullMakeupTryOnScreenState extends State<FullMakeupTryOnScreen> {
   int _activeCatIndex = 0;
   final Map<String, Product?> _applied       = {};  // label → applied Product
   final Map<String, int>      _shadeIdx      = {};  // label → shade index
-  double _intensity = 0.4;
+  double _intensity = 0.38;
 
   // ── UI toggles ────────────────────────────────────────────────────────────
   bool   _showShades   = false;
@@ -228,15 +228,34 @@ class _FullMakeupTryOnScreenState extends State<FullMakeupTryOnScreen> {
   /// Draw order: base face → blush → highlight → eyes → lips (native stacks up to 10 layers).
   static int _arLayerOrder(String arCommand) {
     final c = arCommand.toLowerCase();
-    if (c == 'cmd_face' || c == 'cmd_foundation' || c == 'cmd_concealer') return 0;
-    if (c == 'cmd_blush') return 1;
-    if (c == 'cmd_highlight') return 2;
-    if (c == 'cmd_eyeshadow' || c == 'cmd_eye') return 3;
-    if (c == 'cmd_mascara') return 4;
-    if (c == 'cmd_eyebrow') return 5;
-    if (c == 'cmd_eyeliner') return 6;
-    if (c == 'cmd_lipliner') return 7;
-    return 8;
+    if (c == 'cmd_face' || c == 'cmd_foundation') return 0;
+    if (c == 'cmd_concealer') return 1;
+    if (c == 'cmd_blush') return 2;
+    if (c == 'cmd_highlight') return 3;
+    if (c == 'cmd_eyeshadow' || c == 'cmd_eye') return 4;
+    if (c == 'cmd_mascara') return 5;
+    if (c == 'cmd_eyebrow') return 6;
+    if (c == 'cmd_eyeliner') return 7;
+    if (c == 'cmd_lipliner') return 8;
+    return 9;
+  }
+
+  /// Per-category strength so foundation reads even, concealer brightens under-eyes, highlight stays subtle.
+  double _layerIntensity(_MakeupCat cat) {
+    final b = _intensity;
+    switch (cat.label) {
+      case 'Foundation':
+        return (b * 0.72).clamp(0.18, 0.62);
+      case 'Concealer':
+        return (b * 1.08).clamp(0.26, 0.72);
+      case 'Highlighter':
+      case 'Contour':
+        return (b * 0.52).clamp(0.10, 0.48);
+      case 'Blush':
+        return (b * 0.88).clamp(0.14, 0.65);
+      default:
+        return b.clamp(0.0, 1.0);
+    }
   }
 
   Future<void> _applyEffect() async {
@@ -276,7 +295,7 @@ class _FullMakeupTryOnScreenState extends State<FullMakeupTryOnScreen> {
       layers.add({
         'category': e.cat.arCommand,
         'shade': e.shade.toARGB32(),
-        'intensity': _intensity,
+        'intensity': _layerIntensity(e.cat),
       });
     }
     await ctrl.setLook(layers: layers, isCompareMode: _compareMode);
@@ -500,49 +519,104 @@ class _FullMakeupTryOnScreenState extends State<FullMakeupTryOnScreen> {
 
   // ── Top bar ───────────────────────────────────────────────────────────────
   Widget _buildTopBar() {
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 4),
-      child: Row(
-        children: [
-          IconButton(
-            icon: const Icon(Icons.arrow_back_ios_rounded, color: Colors.white, size: 20),
-            onPressed: () => Navigator.of(context).maybePop(),
-          ),
-          Expanded(
-            child: Text(
-              'VIRTUAL TRY-ON',
-              textAlign: TextAlign.center,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: const TextStyle(
-                color: Colors.white,
-                fontSize: 14,
-                fontWeight: FontWeight.w800,
-                letterSpacing: 1.2,
-              ),
-            ),
-          ),
-          // Live mode: status + debug. Selfie/photo mode: skip Hud + debug (saves width; fps N/A).
-          if (widget.mode != TryOnMode.selfie) ...[
-            Hud(ready: _nativeReady, fps: _nativeFps, frames: 0, det: 0),
-            IconButton(
-              icon: Icon(
-                _nativeDebug ? Icons.bug_report : Icons.bug_report_outlined,
-                color: Colors.white60,
-                size: 20,
-              ),
-              onPressed: () {
-                setState(() => _nativeDebug = !_nativeDebug);
-                _nativeCtrl?.setDebug(showLandmarks: _nativeDebug);
-              },
-            ),
-          ],
-          if (widget.mode == TryOnMode.selfie && _selfiePath != null)
-            IconButton(
+    const barHeight = 48.0;
+    const sideSlotWidth = 118.0;
+
+    Widget backButton() => IconButton(
+      visualDensity: VisualDensity.compact,
+      constraints: const BoxConstraints(minWidth: 44, minHeight: 44),
+      padding: EdgeInsets.zero,
+      icon: const Icon(Icons.arrow_back_ios_new_rounded, color: Colors.white, size: 20),
+      onPressed: () => Navigator.of(context).maybePop(),
+    );
+
+    Widget rightSlot() {
+      if (widget.mode == TryOnMode.selfie) {
+        if (_selfiePath == null) {
+          return const SizedBox(width: sideSlotWidth);
+        }
+        return SizedBox(
+          width: sideSlotWidth,
+          child: Align(
+            alignment: Alignment.centerRight,
+            child: IconButton(
+              visualDensity: VisualDensity.compact,
+              constraints: const BoxConstraints(minWidth: 44, minHeight: 44),
+              padding: EdgeInsets.zero,
               tooltip: 'Change photo',
               icon: const Icon(Icons.photo_camera_outlined, color: Colors.white, size: 22),
               onPressed: _selfieBusy ? null : _takeSelfie,
             ),
+          ),
+        );
+      }
+      return SizedBox(
+        width: sideSlotWidth,
+        child: Align(
+          alignment: Alignment.centerRight,
+          child: FittedBox(
+            fit: BoxFit.scaleDown,
+            alignment: Alignment.centerRight,
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Hud(ready: _nativeReady, fps: _nativeFps, frames: 0, det: 0, compact: true),
+                IconButton(
+                  visualDensity: VisualDensity.compact,
+                  constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
+                  padding: EdgeInsets.zero,
+                  icon: Icon(
+                    _nativeDebug ? Icons.bug_report : Icons.bug_report_outlined,
+                    color: Colors.white60,
+                    size: 18,
+                  ),
+                  onPressed: () {
+                    setState(() => _nativeDebug = !_nativeDebug);
+                    _nativeCtrl?.setDebug(showLandmarks: _nativeDebug);
+                  },
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+    }
+
+    return Container(
+      height: barHeight,
+      padding: const EdgeInsets.symmetric(horizontal: 2),
+      decoration: BoxDecoration(
+        color: Colors.black.withValues(alpha: 0.35),
+        border: Border(
+          bottom: BorderSide(color: Colors.white.withValues(alpha: 0.08)),
+        ),
+      ),
+      child: Stack(
+        alignment: Alignment.center,
+        children: [
+          Align(
+            alignment: Alignment.centerLeft,
+            child: SizedBox(width: sideSlotWidth, child: backButton()),
+          ),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: sideSlotWidth + 4),
+            child: FittedBox(
+              fit: BoxFit.scaleDown,
+              child: Text(
+                'VIRTUAL TRY-ON',
+                textAlign: TextAlign.center,
+                maxLines: 1,
+                style: TextStyle(
+                  color: Colors.white,
+                  fontSize: widget.mode == TryOnMode.live ? 13 : 14,
+                  height: 1.0,
+                  fontWeight: FontWeight.w800,
+                  letterSpacing: widget.mode == TryOnMode.live ? 0.8 : 1.0,
+                ),
+              ),
+            ),
+          ),
+          Align(alignment: Alignment.centerRight, child: rightSlot()),
         ],
       ),
     );

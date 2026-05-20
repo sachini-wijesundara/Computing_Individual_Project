@@ -11,6 +11,7 @@ import 'admin_manage_orders_screen.dart';
 import 'admin_manage_reviews_screen.dart';
 import 'admin_manage_users_screen.dart';
 import 'widgets/admin_side_panel.dart';
+import '../../utils/admin_shade_color_registry.dart';
 import '../../utils/price_format.dart';
 import '../../utils/seed_products.dart';
 import '../../widgets/firebase_image.dart';
@@ -1426,6 +1427,9 @@ class _AdminProductFormPageState extends State<_AdminProductFormPage> {
   late final TextEditingController _stockCtrl;
   late final TextEditingController _imagePathCtrl;
   List<Map<String, String>> _shades = [];
+  final List<TextEditingController> _shadeNameControllers = [];
+  final List<int> _shadeRowKeys = [];
+  int _nextShadeRowKey = 0;
   String _selectedCategory = 'Lip Sticks';
   String _selectedSubCategory = 'Lipstick';
   Uint8List? _pickedBytes;
@@ -1500,6 +1504,21 @@ class _AdminProductFormPageState extends State<_AdminProductFormPage> {
         {'name': 'Default Shade', 'hex': '#C0392B'},
       ];
     }
+    _initShadeControllers();
+  }
+
+  void _initShadeControllers() {
+    for (final c in _shadeNameControllers) {
+      c.dispose();
+    }
+    _shadeNameControllers.clear();
+    _shadeRowKeys.clear();
+    for (final s in _shades) {
+      _shadeRowKeys.add(_nextShadeRowKey++);
+      _shadeNameControllers.add(
+        TextEditingController(text: s['name'] ?? ''),
+      );
+    }
   }
 
   @override
@@ -1510,6 +1529,9 @@ class _AdminProductFormPageState extends State<_AdminProductFormPage> {
     _priceCtrl.dispose();
     _stockCtrl.dispose();
     _imagePathCtrl.dispose();
+    for (final c in _shadeNameControllers) {
+      c.dispose();
+    }
     super.dispose();
   }
 
@@ -1587,6 +1609,16 @@ class _AdminProductFormPageState extends State<_AdminProductFormPage> {
                       style: const TextStyle(
                         fontSize: 22,
                         fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    const Text(
+                      'Type any colour name (30,000+ in database), a hex code (#FF5733), '
+                      'or tap the swatch to pick any colour.',
+                      style: TextStyle(
+                        fontSize: 13,
+                        color: Colors.black54,
+                        height: 1.35,
                       ),
                     ),
                     const SizedBox(height: 12),
@@ -1736,6 +1768,7 @@ class _AdminProductFormPageState extends State<_AdminProductFormPage> {
             _shades = [
               {'name': 'Default Shade', 'hex': '#C0392B'},
             ];
+            _initShadeControllers();
           }
         });
       },
@@ -1767,10 +1800,48 @@ class _AdminProductFormPageState extends State<_AdminProductFormPage> {
             _shades = [
               {'name': 'Default Shade', 'hex': '#C0392B'},
             ];
+            _initShadeControllers();
           }
         });
       },
     );
+  }
+
+  Color _colorFromHex(String hex) => _adminColorFromHex(hex);
+
+  String _hexFromColor(Color color) => _adminHexFromColor(color);
+
+  String? _shadeNameHelper(int index) {
+    final name = (_shades[index]['name'] ?? '').trim();
+    if (name.isEmpty) {
+      return 'Type a colour name (30,000+), or hex like #FF5733, or tap swatch';
+    }
+    final hex = AdminShadeColorRegistry.hexForShadeName(name);
+    if (hex != null && _normalizeHex(_shades[index]['hex'] ?? '') == _normalizeHex(hex)) {
+      return 'Hex auto-matched for “$name”';
+    }
+    return 'No catalogue match — tap swatch to set colour';
+  }
+
+  Future<void> _pickShadeColor(int index) async {
+    final current = _colorFromHex(_shades[index]['hex'] ?? '#C0392B');
+    final picked = await showDialog<Color>(
+      context: context,
+      builder: (ctx) => _AdminShadeColorPickerDialog(
+        initial: current,
+        onPresetSelected: (name, hex) {
+          _shades[index]['name'] = name;
+          _shades[index]['hex'] = _normalizeHex(hex);
+          if (index < _shadeNameControllers.length) {
+            _shadeNameControllers[index].text = name;
+          }
+        },
+      ),
+    );
+    if (picked == null || !mounted) return;
+    setState(() {
+      _shades[index]['hex'] = _hexFromColor(picked);
+    });
   }
 
   List<Widget> _buildShadeRows() {
@@ -1791,44 +1862,113 @@ class _AdminProductFormPageState extends State<_AdminProductFormPage> {
     final rows = <Widget>[];
     for (var i = 0; i < _shades.length; i++) {
       final shade = _shades[i];
+      final hex = _normalizeHex((shade['hex'] ?? '').trim());
+      final swatchColor = _colorFromHex(hex);
+      final rowKey = i < _shadeRowKeys.length ? _shadeRowKeys[i] : i;
       rows.add(
-        Row(
-          children: [
-            Expanded(
-              flex: 3,
-              child: TextFormField(
-                initialValue: shade['name'] ?? '',
-                decoration: InputDecoration(
-                  labelText: 'Shade name',
-                  border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(10),
+        KeyedSubtree(
+          key: ValueKey('shade-row-$rowKey'),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Expanded(
+                flex: 3,
+                child: TextFormField(
+                  controller: _shadeNameControllers[i],
+                  decoration: InputDecoration(
+                    labelText: 'Shade name',
+                    helperText: _shadeNameHelper(i),
+                    helperMaxLines: 2,
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                  ),
+                  onChanged: (v) {
+                    _shades[i]['name'] = v;
+                    final matched = AdminShadeColorRegistry.hexForShadeName(v);
+                    if (matched != null) {
+                      _shades[i]['hex'] = _normalizeHex(matched);
+                    }
+                    setState(() {});
+                  },
+                ),
+              ),
+              const SizedBox(width: 10),
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text(
+                    'Shade colour',
+                    style: TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600,
+                      color: Colors.black54,
+                    ),
+                  ),
+                  const SizedBox(height: 6),
+                  Material(
+                    color: Colors.transparent,
+                    child: InkWell(
+                      onTap: () => _pickShadeColor(i),
+                      borderRadius: BorderRadius.circular(10),
+                      child: Ink(
+                        width: 52,
+                        height: 52,
+                        decoration: BoxDecoration(
+                          color: swatchColor,
+                          borderRadius: BorderRadius.circular(10),
+                          border: Border.all(color: const Color(0xFFD8DCE8), width: 1.2),
+                        ),
+                        child: const Icon(
+                          Icons.colorize_outlined,
+                          color: Colors.white,
+                          shadows: [
+                            Shadow(blurRadius: 4, color: Colors.black45),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                flex: 2,
+                child: Padding(
+                  padding: const EdgeInsets.only(top: 22),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text(
+                        'Hex (auto)',
+                        style: TextStyle(
+                          fontSize: 11,
+                          fontWeight: FontWeight.w600,
+                          color: Colors.black54,
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      Text(
+                        hex,
+                        style: const TextStyle(
+                          fontFamily: 'monospace',
+                          fontWeight: FontWeight.w700,
+                          fontSize: 14,
+                        ),
+                      ),
+                    ],
                   ),
                 ),
-                onChanged: (v) => _shades[i]['name'] = v,
               ),
-            ),
-            const SizedBox(width: 10),
-            Expanded(
-              flex: 2,
-              child: TextFormField(
-                initialValue: shade['hex'] ?? '',
-                decoration: InputDecoration(
-                  labelText: 'Hex (#RRGGBB)',
-                  border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(10),
-                  ),
-                ),
-                onChanged: (v) => _shades[i]['hex'] = v,
+              IconButton(
+                tooltip: 'Remove shade',
+                constraints: const BoxConstraints(minWidth: 40, minHeight: 40),
+                padding: EdgeInsets.zero,
+                onPressed: () => _removeShadeRow(i),
+                icon: const Icon(Icons.delete_outline, size: 22),
               ),
-            ),
-            IconButton(
-              tooltip: 'Remove shade',
-              constraints: const BoxConstraints(minWidth: 40, minHeight: 40),
-              padding: EdgeInsets.zero,
-              onPressed: () => _removeShadeRow(i),
-              icon: const Icon(Icons.delete_outline, size: 22),
-            ),
-          ],
+            ],
+          ),
         ),
       );
       if (i != _shades.length - 1) rows.add(const SizedBox(height: 10));
@@ -1839,18 +1979,27 @@ class _AdminProductFormPageState extends State<_AdminProductFormPage> {
   void _addShadeRow() {
     setState(() {
       _shades.add({'name': '', 'hex': '#C0392B'});
+      _shadeRowKeys.add(_nextShadeRowKey++);
+      _shadeNameControllers.add(TextEditingController());
     });
   }
 
   void _removeShadeRow(int index) {
+    if (index < 0 || index >= _shades.length) return;
+    if (index < _shadeNameControllers.length) {
+      _shadeNameControllers[index].dispose();
+    }
     setState(() {
-      if (index >= 0 && index < _shades.length) {
-        _shades.removeAt(index);
+      _shades.removeAt(index);
+      if (index < _shadeRowKeys.length) _shadeRowKeys.removeAt(index);
+      if (index < _shadeNameControllers.length) {
+        _shadeNameControllers.removeAt(index);
       }
       if (_requiresColorOptions && _shades.isEmpty) {
         _shades = [
           {'name': 'Default Shade', 'hex': '#C0392B'},
         ];
+        _initShadeControllers();
       }
     });
   }
@@ -2175,6 +2324,246 @@ class _AdminProductFormPageState extends State<_AdminProductFormPage> {
     if (!out.startsWith('#')) out = '#$out';
     final valid = RegExp(r'^#[0-9A-F]{6}$').hasMatch(out);
     return valid ? out : '#C0392B';
+  }
+}
+
+/// ARGB → `#RRGGBB` for Firestore / live try-on.
+String _adminHexFromColor(Color color) {
+  final r = (color.r * 255.0).round().clamp(0, 255);
+  final g = (color.g * 255.0).round().clamp(0, 255);
+  final b = (color.b * 255.0).round().clamp(0, 255);
+  return '#'
+      '${r.toRadixString(16).padLeft(2, '0')}'
+      '${g.toRadixString(16).padLeft(2, '0')}'
+      '${b.toRadixString(16).padLeft(2, '0')}'.toUpperCase();
+}
+
+Color _adminColorFromHex(String hex) {
+  var s = hex.trim().replaceAll('#', '');
+  if (s.length == 6) s = 'FF$s';
+  if (s.length == 8) {
+    final v = int.tryParse(s, radix: 16);
+    if (v != null) return Color(v);
+  }
+  return const Color(0xFFC0392B);
+}
+
+/// Simple HSV colour picker — no extra package; hex is derived on Apply.
+class _AdminShadeColorPickerDialog extends StatefulWidget {
+  final Color initial;
+  final void Function(String name, String hex)? onPresetSelected;
+
+  const _AdminShadeColorPickerDialog({
+    required this.initial,
+    this.onPresetSelected,
+  });
+
+  @override
+  State<_AdminShadeColorPickerDialog> createState() =>
+      _AdminShadeColorPickerDialogState();
+}
+
+class _AdminShadeColorPickerDialogState
+    extends State<_AdminShadeColorPickerDialog> {
+  late HSVColor _hsv;
+  final TextEditingController _searchCtrl = TextEditingController();
+  List<Map<String, String>> _searchHits = [];
+
+  @override
+  void initState() {
+    super.initState();
+    _hsv = HSVColor.fromColor(widget.initial);
+    _searchHits = AdminShadeColorRegistry.searchColors('', limit: 24);
+    _searchCtrl.addListener(_onSearchChanged);
+  }
+
+  @override
+  void dispose() {
+    _searchCtrl.dispose();
+    super.dispose();
+  }
+
+  void _onSearchChanged() {
+    setState(() {
+      _searchHits = AdminShadeColorRegistry.searchColors(
+        _searchCtrl.text,
+        limit: 24,
+      );
+    });
+  }
+
+  void _applyNamedColor(String name, String hex) {
+    widget.onPresetSelected?.call(name, hex);
+    Navigator.pop(context, _adminColorFromHex(hex));
+  }
+
+  Widget _channelSlider({
+    required String label,
+    required double value,
+    required double max,
+    required ValueChanged<double> onChanged,
+  }) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          label,
+          style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
+        ),
+        Slider(
+          value: value.clamp(0, max),
+          min: 0,
+          max: max,
+          onChanged: onChanged,
+        ),
+      ],
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final color = _hsv.toColor();
+    final hex = _adminHexFromColor(color);
+    final maxH = MediaQuery.sizeOf(context).height * 0.72;
+    return AlertDialog(
+      title: const Text('Select shade colour'),
+      content: SizedBox(
+        width: 400,
+        child: ConstrainedBox(
+          constraints: BoxConstraints(maxHeight: maxH),
+          child: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                TextField(
+                  controller: _searchCtrl,
+                  decoration: InputDecoration(
+                labelText: 'Search product shades + colour names',
+                hintText: 'e.g. Berry Bliss, deep berry, crimson',
+                    prefixIcon: const Icon(Icons.search, size: 20),
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    isDense: true,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                SizedBox(
+                  height: 140,
+                  child: _searchHits.isEmpty
+                      ? Center(
+                          child: Text(
+                            _searchCtrl.text.trim().length < 2
+                                ? 'Your product shades appear here — type to search'
+                                : 'No match for “${_searchCtrl.text.trim()}”. '
+                                    'Try Berry Bliss, deep berry, or type #hex',
+                            textAlign: TextAlign.center,
+                            style: const TextStyle(
+                              color: Colors.black54,
+                              fontSize: 13,
+                            ),
+                          ),
+                        )
+                      : ListView.separated(
+                          itemCount: _searchHits.length,
+                          separatorBuilder: (_, __) =>
+                              const Divider(height: 1),
+                          itemBuilder: (context, index) {
+                            final p = _searchHits[index];
+                            final name = p['name'] ?? '';
+                            final h = p['hex'] ?? '#C0392B';
+                            return ListTile(
+                              dense: true,
+                              visualDensity: VisualDensity.compact,
+                              leading: Container(
+                                width: 28,
+                                height: 28,
+                                decoration: BoxDecoration(
+                                  color: _adminColorFromHex(h),
+                                  borderRadius: BorderRadius.circular(6),
+                                  border: Border.all(
+                                    color: Colors.grey.shade400,
+                                  ),
+                                ),
+                              ),
+                              title: Text(
+                                name,
+                                style: const TextStyle(fontSize: 13),
+                              ),
+                              subtitle: Text(
+                                h,
+                                style: const TextStyle(
+                                  fontFamily: 'monospace',
+                                  fontSize: 11,
+                                ),
+                              ),
+                              onTap: () => _applyNamedColor(name, h),
+                            );
+                          },
+                        ),
+                ),
+                const SizedBox(height: 12),
+                const Align(
+                  alignment: Alignment.centerLeft,
+                  child: Text(
+                    'Custom (sliders)',
+                    style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700),
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Container(
+                  height: 48,
+                  width: double.infinity,
+                  decoration: BoxDecoration(
+                    color: color,
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: Colors.grey.shade400),
+                  ),
+                ),
+                const SizedBox(height: 6),
+                Text(
+                  hex,
+                  style: const TextStyle(
+                    fontFamily: 'monospace',
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                _channelSlider(
+                  label: 'Hue',
+                  value: _hsv.hue,
+                  max: 360,
+                  onChanged: (v) => setState(() => _hsv = _hsv.withHue(v)),
+                ),
+                _channelSlider(
+                  label: 'Saturation',
+                  value: _hsv.saturation,
+                  max: 1,
+                  onChanged: (v) =>
+                      setState(() => _hsv = _hsv.withSaturation(v)),
+                ),
+                _channelSlider(
+                  label: 'Brightness',
+                  value: _hsv.value,
+                  max: 1,
+                  onChanged: (v) => setState(() => _hsv = _hsv.withValue(v)),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(
+          onPressed: () => Navigator.pop(context, color),
+          child: const Text('Apply'),
+        ),
+      ],
+    );
   }
 }
 

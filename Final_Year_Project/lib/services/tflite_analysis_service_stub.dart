@@ -60,6 +60,14 @@ class TFLiteAnalysisService {
     debugPrint('TFLiteAnalysisService (web stub): initialize no-op');
   }
 
+  void clearVisionCache() {}
+
+  Future<({SkinToneResult skin, HairResult hair})> analyzeBeauty(XFile file) async {
+    final skin = await analyzeSkin(file);
+    final hair = await analyzeHair(file);
+    return (skin: skin, hair: hair);
+  }
+
   Future<SkinToneResult> analyzeSkin(XFile file) async {
     return const SkinToneResult(
       skinTone: '—',

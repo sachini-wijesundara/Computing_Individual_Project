@@ -40,6 +40,8 @@ class _EnhancedAIAssistantScreenState
   Uint8List? _previewBytes;
   SkinToneResult? _skin;
   HairResult? _hair;
+  /// Ignores late results if the user uploads another photo while analysis is running.
+  int _analysisSeq = 0;
 
   // ── Pick image ─────────────────────────────────────────────────────────────
   Future<void> _selfie() async {
@@ -53,7 +55,9 @@ class _EnhancedAIAssistantScreenState
 
   // ── Analyze ────────────────────────────────────────────────────────────────
   Future<void> _analyze(XFile file) async {
+    final seq = ++_analysisSeq;
     final bytes = await file.readAsBytes();
+    if (!mounted || seq != _analysisSeq) return;
     setState(() {
       _previewBytes = bytes;
       _analyzing = true;
@@ -62,8 +66,12 @@ class _EnhancedAIAssistantScreenState
     });
     try {
       await _tflite.initialize();
-      final skin = await _tflite.analyzeSkin(file);
-      final hair = await _tflite.analyzeHair(file);
+      if (seq != _analysisSeq) return;
+      // Single pipeline: same photo for skin + hair (no mixed people).
+      final pair = await _tflite.analyzeBeauty(file);
+      final skin = pair.skin;
+      final hair = pair.hair;
+      if (!mounted || seq != _analysisSeq) return;
       _gemini.setBeautyProfile(BeautyProfile(
         skinTone: skin.skinTone, undertone: skin.undertone,
         hairType: hair.hairType, hairColor: hair.hairColor,
@@ -72,8 +80,11 @@ class _EnhancedAIAssistantScreenState
       Map<String, dynamic>? mergedProfile;
       if (FirebaseAuth.instance.currentUser != null) {
         try {
-          mergedProfile = await BeautyProfileService.instance
-              .saveAfterAnalysis(skin: skin, hair: hair);
+          mergedProfile = await BeautyProfileService.instance.saveAfterAnalysis(
+            skin: skin,
+            hair: hair,
+            replaceEntireProfile: true,
+          );
         } catch (e, st) {
           debugPrint('Beauty profile save: $e\n$st');
         }
@@ -89,7 +100,7 @@ class _EnhancedAIAssistantScreenState
           ));
         }
       }
-      if (!mounted) return;
+      if (!mounted || seq != _analysisSeq) return;
       setState(() { _skin = skin; _hair = hair; _analyzing = false; });
       if (!mounted) return;
       if (FirebaseAuth.instance.currentUser != null && mergedProfile != null) {
@@ -103,7 +114,7 @@ class _EnhancedAIAssistantScreenState
       }
     } catch (e, st) {
       debugPrint('Enhanced AI analysis error: $e\n$st');
-      if (!mounted) return;
+      if (!mounted || seq != _analysisSeq) return;
       setState(() => _analyzing = false);
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
