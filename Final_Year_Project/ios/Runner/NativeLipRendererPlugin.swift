@@ -3748,6 +3748,34 @@ private class NativeLipRendererView: NSObject, FlutterPlatformView, FlutterStrea
     lipOverlayLayer.zPosition = 120
   }
 
+  /// Full-makeup `setLook` slots must sit directly above the camera preview (siblings), not only
+  /// inside `makeupStackParent`. Otherwise blush `colorBlendMode` blends with foundation layers
+  /// instead of live pixels — same quality as single-product `setEffect` on `lipOverlayLayer`.
+  private func layoutMakeupSlotLayersForStack() {
+    let size = container.bounds.size
+    guard size.width > 1, size.height > 1 else { return }
+    let frame = CGRect(origin: .zero, size: size)
+    let subs = container.layer.sublayers
+    for (i, sl) in makeupSlotLayers.enumerated() {
+      var misplaced = sl.superlayer != container.layer
+      if !misplaced, let preview = previewLayer, let subs,
+         let pi = subs.firstIndex(of: preview), let si = subs.firstIndex(of: sl) {
+        misplaced = si <= pi
+      }
+      if misplaced {
+        sl.removeFromSuperlayer()
+        if let preview = previewLayer {
+          container.layer.insertSublayer(sl, above: preview)
+        } else {
+          container.layer.insertSublayer(sl, below: lipOverlayLayer)
+        }
+      }
+      sl.frame = frame
+      sl.zPosition = 40 + CGFloat(i)
+    }
+    lipOverlayLayer.zPosition = 120
+  }
+
   /// Normalize EXIF orientation so selfie landmarks/rendering align to actual pixels.
   private func normalizedUIImage(_ image: UIImage) -> UIImage {
     if image.imageOrientation == .up { return image }
